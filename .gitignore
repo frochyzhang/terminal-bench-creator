@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+
+# Task zip archives
+server/tasks/**/*.zip
+
+# Coverage
+coverage/
+
+# Vite cache
+client/.vite/
+
+# Claude Code local settings
+.claude/
