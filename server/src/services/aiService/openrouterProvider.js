@@ -66,6 +66,7 @@ export async function generateWithOpenRouter(systemPrompt, userPrompt, onChunk, 
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
+  console.log(`[AI] → ${apiBase}/chat/completions  model=${model}  hasKey=${!!apiKey}`);
   const response = await fetch(`${apiBase}/chat/completions`, {
     method: 'POST',
     headers,
