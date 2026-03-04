@@ -108,6 +108,9 @@ export default function Settings() {
           </Form.Item>
 
           <Divider>OpenRouter</Divider>
+          <Form.Item name="openrouter_api_base" label="API Base URL">
+            <Input placeholder="http://127.0.0.1:8080/api/v1" />
+          </Form.Item>
           <Form.Item name="openrouter_api_key" label="OpenRouter API Key">
             <Input.Password placeholder="sk-or-..." />
           </Form.Item>

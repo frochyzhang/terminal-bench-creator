@@ -27,6 +27,12 @@ async function getApiKey() {
   return result.rows[0]?.value || '';
 }
 
+async function getApiBase() {
+  const result = await pool.query("SELECT value FROM settings WHERE key = 'openrouter_api_base'");
+  const base = result.rows[0]?.value?.trim();
+  return base ? base.replace(/\/+$/, '') : 'https://openrouter.ai/api/v1';
+}
+
 async function getModel() {
   const result = await pool.query("SELECT value FROM settings WHERE key = 'openrouter_model'");
   return result.rows[0]?.value || 'anthropic/claude-opus-4-6';
@@ -40,21 +46,29 @@ async function getModel() {
  * @param {string} [modelOverride] - override settings model
  */
 export async function generateWithOpenRouter(systemPrompt, userPrompt, onChunk, modelOverride) {
-  const apiKey = await getApiKey();
-  if (!apiKey) {
+  const [apiKey, model, apiBase] = await Promise.all([
+    getApiKey(),
+    modelOverride ? Promise.resolve(modelOverride) : getModel(),
+    getApiBase(),
+  ]);
+
+  const isDefaultBase = apiBase === 'https://openrouter.ai/api/v1';
+  if (!apiKey && isDefaultBase) {
     throw new Error('OpenRouter API key not configured');
   }
 
-  const model = modelOverride || await getModel();
+  const headers = {
+    'Content-Type': 'application/json',
+    'HTTP-Referer': 'https://terminal-bench-station',
+    'X-Title': 'Terminal-Bench Station',
+  };
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
 
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const response = await fetch(`${apiBase}/chat/completions`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://terminal-bench-station',
-      'X-Title': 'Terminal-Bench Station',
-    },
+    headers,
     body: JSON.stringify({
       model,
       max_tokens: 4096,
