@@ -70,9 +70,9 @@ function log(job, level, message, extra = {}) {
  * @param {string} opts.taskId
  * @param {string} opts.slug
  * @param {number} [opts.maxRetries=10]
- * @param {string} [opts.model='openrouter/deepseek/deepseek-v3.2']
+ * @param {string} [opts.model='deepseek/deepseek-v3.2']
  */
-export async function startVerify({ taskId, slug, maxRetries = 10, model = 'openrouter/deepseek/deepseek-v3.2' }) {
+export async function startVerify({ taskId, slug, maxRetries = 10, model = 'deepseek/deepseek-v3.2' }) {
   if (verifyJobs.get(taskId)?.running) {
     throw new Error('Verify already running for this task');
   }

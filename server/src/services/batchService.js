@@ -16,6 +16,7 @@ import { fetchSOQuestions, buildSOContext, titleToSlug, uniqueSlug } from './scr
 import { createTaskScaffold, writeTaskFile, getTaskDir } from './taskFileService.js';
 import { lintTask } from './lintService.js';
 import { runWithQueue } from './queueService.js';
+import { getRateSettings } from './settingsService.js';
 import { startPolish } from './polishService.js';
 import {
   soInstructionPrompt,
@@ -133,23 +134,25 @@ async function waitWhilePaused() {
 export async function startJob(config) {
   if (currentJob?.running) throw new Error('A scrape job is already running');
 
+  const rate = await getRateSettings();
+
   const cfg = {
     tags:              config.tags || 'bash;linux',
     query:             config.query || '',
     site:              config.site || 'stackoverflow',
     apiKey:            config.apiKey || '',
     maxTasks:          Math.min(config.maxTasks || 5, 50),
-    model:             config.model || 'deepseek/deepseek-chat',
-    soDelay:           config.soDelay ?? 2000,
-    aiDelay:           config.aiDelay ?? 2000,
-    taskDelay:         config.taskDelay ?? 3000,
+    model:             config.model || 'deepseek/deepseek-v3.2',
+    soDelay:           rate.soDelay,
+    aiDelay:           rate.aiDelay,
+    taskDelay:         rate.taskDelay,
     minScore:          config.minScore ?? 5,
     skipExisting:      config.skipExisting ?? true,
     difficulty:        config.difficulty || '',
     terminalOnly:      config.terminalOnly ?? true,
     screening:         config.screening ?? true,
     screeningTimeout:  config.screeningTimeout ?? 180,
-    screeningModel:    config.screeningModel || 'openrouter/anthropic/claude-opus-4.5',
+    screeningModel:    config.screeningModel || 'anthropic/claude-opus-4.5',
     polish:            config.polish ?? true,
     polishMaxRounds:   config.polishMaxRounds ?? 5,
   };
@@ -467,7 +470,7 @@ async function processQuestion(q, cfg, baseSlug) {
       maxRounds:       cfg.polishMaxRounds,
       oracleTimeout:   600,
       agentAttempts:   cfg.agentAttempts ?? 1,
-      lintModel:       'openrouter/deepseek/deepseek-v3.2',
+      lintModel:       'deepseek/deepseek-v3.2',
       fixModel:        cfg.model,
       autoSubmit:      true,
       externalBroadcast,

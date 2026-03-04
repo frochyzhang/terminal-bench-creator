@@ -1,11 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Form, Input, Select, Button, Space, Alert, Typography, Divider, message, Spin
+  Card, Form, Input, InputNumber, Select, Switch, Button, Space, Row, Col,
+  Typography, Divider, message, Spin,
 } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { getSettings, updateSettings, testConnection } from '../../api/settings.js';
 
 const { Title, Text } = Typography;
+
+const BOOLEAN_KEYS = new Set(['rate_control_enabled']);
+const NUMBER_KEYS  = new Set([
+  'rate_so_delay', 'rate_ai_delay', 'rate_task_delay',
+  'queue_max_concurrent', 'queue_cpu_threshold', 'queue_mem_threshold',
+]);
 
 export default function Settings() {
   const [form] = Form.useForm();
@@ -14,6 +21,7 @@ export default function Settings() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [rawSettings, setRawSettings] = useState({});
+  const rateEnabled = Form.useWatch('rate_control_enabled', form);
 
   useEffect(() => {
     loadSettings();
@@ -26,7 +34,15 @@ export default function Settings() {
       setRawSettings(data);
       const formValues = {};
       for (const [key, info] of Object.entries(data)) {
-        formValues[key] = info.isSensitive ? '' : info.value;
+        if (info.isSensitive) {
+          formValues[key] = '';
+        } else if (BOOLEAN_KEYS.has(key)) {
+          formValues[key] = info.value !== 'false';
+        } else if (NUMBER_KEYS.has(key)) {
+          formValues[key] = info.value != null ? Number(info.value) : undefined;
+        } else {
+          formValues[key] = info.value;
+        }
       }
       form.setFieldsValue(formValues);
     } catch (err) {
@@ -39,11 +55,10 @@ export default function Settings() {
   async function handleSave(values) {
     setSaving(true);
     try {
-      // Only send non-empty values (don't overwrite secrets with empty)
       const updates = {};
       for (const [key, val] of Object.entries(values)) {
         if (val !== '' && val !== null && val !== undefined) {
-          updates[key] = val;
+          updates[key] = (typeof val === 'boolean' || typeof val === 'number') ? String(val) : val;
         }
       }
       await updateSettings(updates);
@@ -84,7 +99,20 @@ export default function Settings() {
     <div style={{ maxWidth: 700 }}>
       <Title level={3}>Settings</Title>
 
-      <Form form={form} layout="vertical" onFinish={handleSave}>
+      <Form
+        form={form}
+        layout="vertical"
+        onFinish={handleSave}
+        initialValues={{
+          rate_control_enabled: true,
+          rate_so_delay: 2000,
+          rate_ai_delay: 2000,
+          rate_task_delay: 3000,
+          queue_max_concurrent: 3,
+          queue_cpu_threshold: 80,
+          queue_mem_threshold: 90,
+        }}
+      >
         <Card title="AI Provider" style={{ marginBottom: 16 }}>
           <Form.Item name="ai_provider" label="Provider">
             <Select>
@@ -144,6 +172,58 @@ export default function Settings() {
           <Form.Item name="tb_password" label="Password">
             <Input.Password placeholder="••••••••" />
           </Form.Item>
+        </Card>
+
+        <Card
+          title="Rate Control"
+          style={{ marginBottom: 16 }}
+          extra={
+            <Form.Item name="rate_control_enabled" valuePropName="checked" style={{ marginBottom: 0 }}>
+              <Switch checkedChildren="ON" unCheckedChildren="OFF" />
+            </Form.Item>
+          }
+        >
+          {rateEnabled ? (
+            <Row gutter={12}>
+              <Col span={8}>
+                <Form.Item name="rate_so_delay" label="SO Delay (ms)">
+                  <InputNumber min={0} max={30000} step={500} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={8}>
+                <Form.Item name="rate_ai_delay" label="AI Delay (ms)">
+                  <InputNumber min={0} max={30000} step={500} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={8}>
+                <Form.Item name="rate_task_delay" label="Task Delay (ms)">
+                  <InputNumber min={0} max={30000} step={500} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+            </Row>
+          ) : (
+            <Text type="secondary">Rate limiting disabled — all delays are 0.</Text>
+          )}
+        </Card>
+
+        <Card title="Queue Limits" style={{ marginBottom: 16 }}>
+          <Row gutter={12}>
+            <Col span={8}>
+              <Form.Item name="queue_max_concurrent" label="API Concurrency">
+                <InputNumber min={1} max={20} step={1} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="queue_cpu_threshold" label="CPU Gate (%)">
+                <InputNumber min={10} max={100} step={5} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="queue_mem_threshold" label="MEM Gate (%)">
+                <InputNumber min={10} max={100} step={5} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
         </Card>
 
         <Button type="primary" htmlType="submit" loading={saving} size="large">

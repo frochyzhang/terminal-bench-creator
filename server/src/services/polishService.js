@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'child_process';
-import { readFile, rm, mkdir, access } from 'fs/promises';
+import { readFile, writeFile, rm, mkdir, access } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import pool from '../db/client.js';
@@ -26,6 +26,7 @@ import { createSubmission } from './tbApiService.js';
 import { startPolling } from './pollService.js';
 import { runWithQueue } from './queueService.js';
 import { INSTR_QUALITY_REVIEWER_SYSTEM, INSTR_FIX_GUIDANCE } from './aiService/prompts/qualityRules.js';
+import { POST_CHECK_01_SYSTEM, POST_CHECK_02_SYSTEM, POST_CHECK_FIX_GUIDANCE } from './aiService/prompts/postCheckPrompts.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const VERIFIER_DIR = resolve(__dirname, '../../../verfifier');
@@ -103,13 +104,13 @@ export async function startPolish({
   maxRounds     = 5,
   oracleTimeout = 600,
   agentAttempts = 4,
-  agentModel    = 'openrouter/anthropic/claude-opus-4-5',
+  agentModel    = 'anthropic/claude-opus-4-5',
   agentTimeout  = 3600,
-  lintModel        = 'openrouter/deepseek/deepseek-v3.2',
-  fixModel         = 'openrouter/anthropic/claude-sonnet-4-6',
+  lintModel        = 'deepseek/deepseek-v3.2',
+  fixModel         = 'anthropic/claude-opus-4-5',
   // TB Step 4 uses gemini-2.5-pro; Step 6 (post-check) mirrors Claude review
   instrCheckModel  = 'google/gemini-2.5-pro',
-  postCheckModel   = 'openrouter/anthropic/claude-sonnet-4-5',
+  postCheckModel   = 'anthropic/claude-sonnet-4-5',
   autoSubmit    = true,
   externalBroadcast = null,
 }) {
@@ -254,30 +255,46 @@ async function runFormatCheck(job, taskPath) {
 // ── 2. Oracle Check — harbor run --agent oracle ───────────────────────────────
 
 function runOracleCheck(job, taskPath) {
-  return new Promise(resolve => {
+  return new Promise(async resolve => {
     broadcast(job.taskId, 'oracle-running', {});
-    log(job, 'info', '  [Oracle] Building image + running oracle agent…');
 
-    const jobsDir = join(taskPath, 'harbor_jobs', `oracle_r${job.round}`);
-    const cmd = mkHarborCmd(
-      `timeout ${job.oracleTimeout} uv run harbor run --path "${taskPath}" --agent oracle --jobs-dir "${jobsDir}"`
-    );
+    const outDir   = join(taskPath, 'post_logs');
+    const logFile  = join(outDir, `oracle_r${job.round}.log`);
+    try { await mkdir(outDir, { recursive: true }); } catch { }
 
-    const child = spawnBash(cmd);
+    const jobsDir   = join(taskPath, 'harbor_jobs', `oracle_r${job.round}`);
+    const harborCmd = `harbor run --path "${taskPath}" --agent oracle --jobs-dir "${jobsDir}"`;
+
+    log(job, 'info', `  [Oracle] ${harborCmd}  (timeout=${job.oracleTimeout}s)`);
+
+    const t0    = Date.now();
+    const child = spawnBash(mkHarborCmd(harborCmd));
+
+    let timedOut = false;
+    const killTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 5000);
+    }, job.oracleTimeout * 1000);
+
     const lines = collectLines(child, line => broadcast(job.taskId, 'oracle-log', { text: line }));
 
-    child.on('close', code => {
-      const passed   = code === 0;
-      const timedOut = code === 124;
-      const output   = lines.slice(-50).join('\n');
-      const issues   = passed ? [] : [
+    child.on('close', async (code, signal) => {
+      clearTimeout(killTimer);
+      if (signal) timedOut = true;
+      const elapsedMs = Date.now() - t0;
+      await _writeRunLog(logFile, `Oracle Round ${job.round}`, job.slug, harborCmd, lines, code ?? signal, elapsedMs);
+
+      const passed = !timedOut && code === 0;
+      const output = lines.slice(-50).join('\n');
+      const issues = passed ? [] : [
         timedOut
           ? `Oracle timed out (${job.oracleTimeout}s) — solution or test may hang`
           : 'Oracle failed — solution does not pass the task tests',
       ];
       broadcast(job.taskId, 'oracle-done', { passed, timedOut, issueCount: issues.length });
       log(job, passed ? 'info' : 'warn',
-        `  [Oracle] ${passed ? '✅' : timedOut ? '⏱ timed out' : '❌'} (exit ${code})`);
+        `  [Oracle] ${passed ? '✅' : timedOut ? '⏱ timed out' : '❌'} exit=${code ?? signal} elapsed=${Math.round(elapsedMs / 1000)}s → ${logFile}`);
       resolve({ passed, timedOut, issues, output });
     });
 
@@ -302,7 +319,7 @@ function runLintCheck(job, taskPath) {
     try { await rm(outFile, { force: true }); } catch { /* absent */ }
 
     const cmd = mkHarborCmd(
-      `uv run harbor tasks check "${taskPath}" -m ${job.lintModel} -o "${outFile}"`
+      `harbor tasks check "${taskPath}" -m ${job.lintModel} -o "${outFile}"`
     );
     const child = spawnBash(cmd);
     collectLines(child, line => broadcast(job.taskId, 'lint-log', { text: line }));
@@ -391,44 +408,68 @@ async function runInstrQualityCheck(job) {
 //    全部失败 (0/N) → 任务有问题（测试/环境 bug）→ 失败
 
 function runAgentCheck(job, taskPath) {
-  return new Promise(resolve => {
+  return new Promise(async resolve => {
     broadcast(job.taskId, 'agent-running', {});
-    log(job, 'info', `  [AgentTest] harbor run terminus-2 k=${job.agentAttempts} (model: ${job.agentModel})…`);
 
-    const jobsDir = join(taskPath, 'harbor_jobs', `agent_r${job.round}`);
-    const cmd = mkHarborCmd(
-      `timeout ${job.agentTimeout} uv run harbor run` +
+    const outDir  = join(taskPath, 'post_logs');
+    const logFile = join(outDir, `agent_r${job.round}.log`);
+    try { await mkdir(outDir, { recursive: true }); } catch { }
+
+    const jobsDir   = join(taskPath, 'harbor_jobs', `agent_r${job.round}`);
+    const harborCmd =
+      ` harbor run` +
       ` --path "${taskPath}"` +
       ` --agent terminus-2` +
       ` --model "${job.agentModel}"` +
       ` --n-attempts ${job.agentAttempts}` +
-      ` --jobs-dir "${jobsDir}"`
-    );
+      ` --jobs-dir "${jobsDir}"`;
 
-    const child = spawnBash(cmd);
+    log(job, 'info', `  [AgentTest] ${harborCmd}  (timeout=${job.agentTimeout}s)`);
+
+    const t0    = Date.now();
+    const child = spawnBash(mkHarborCmd(harborCmd));
+
+    let timedOut = false;
+    const killTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 5000);
+    }, job.agentTimeout * 1000);
+
     const lines = collectLines(child, line => broadcast(job.taskId, 'agent-log', { text: line }));
 
-    child.on('close', code => {
-      const timedOut = code === 124;
-      // Exit 0 = at least 1 attempt passed
-      // Parse pass rate from output (e.g. "2/4 attempts passed")
+    child.on('close', async (code, signal) => {
+      clearTimeout(killTimer);
+      if (signal) timedOut = true;
+      const elapsedMs = Date.now() - t0;
+      await _writeRunLog(logFile, `Agent Test Round ${job.round}`, job.slug, harborCmd, lines, code ?? signal, elapsedMs);
+
       const allOutput = lines.join('\n');
       const rateMatch = allOutput.match(/(\d+)\s*\/\s*(\d+)\s*(attempts?\s*)?(passed|success)/i);
       let passed   = code === 0;
       let passRate = rateMatch ? `${rateMatch[1]}/${rateMatch[2]}` : (passed ? `≥1/${job.agentAttempts}` : `0/${job.agentAttempts}`);
       const issues = [];
 
-      if (!passed || timedOut) {
-        issues.push(
-          timedOut
-            ? `Agent test timed out (${job.agentTimeout}s) — task or environment may be too slow`
-            : `Agent test failed: 0/${job.agentAttempts} attempts passed — task may be broken (tests/Dockerfile/instruction issue)`
-        );
+      if (timedOut) {
+        passed = false;
+        issues.push(`Agent test timed out (${job.agentTimeout}s) — task or environment may be too slow`);
+      } else if (rateMatch) {
+        const passCount  = parseInt(rateMatch[1]);
+        const totalCount = parseInt(rateMatch[2]);
+        if (passCount === 0) {
+          passed = false;
+          issues.push(`Agent test failed: 0/${totalCount} attempts passed — task may be broken (tests/Dockerfile/instruction issue)`);
+        } else if (passCount === totalCount) {
+          passed = false;
+          issues.push(`Agent test too easy: ${passRate} — ALL attempts passed. Task lacks difficulty discrimination. Target: 1–${totalCount - 1}/${totalCount}`);
+        }
+      } else if (!passed) {
+        issues.push(`Agent test failed: 0/${job.agentAttempts} attempts passed — task may be broken (tests/Dockerfile/instruction issue)`);
       }
 
       broadcast(job.taskId, 'agent-done', { passed, passRate, timedOut, issueCount: issues.length });
       log(job, passed ? 'info' : 'warn',
-        `  [AgentTest] ${passed ? `✅ ${passRate} passed` : timedOut ? '⏱ timed out' : `❌ ${passRate} passed`}`);
+        `  [AgentTest] ${passed ? `✅ ${passRate} passed` : timedOut ? '⏱ timed out' : `❌ ${passRate} passed`} exit=${code} elapsed=${Math.round(elapsedMs / 1000)}s → ${logFile}`);
       resolve({ passed, passRate, timedOut, issues, output: allOutput.slice(-2000) });
     });
 
@@ -441,9 +482,9 @@ function runAgentCheck(job, taskPath) {
 }
 
 // ── 6. Post Check — 双 AI 并发质量审核 ───────────────────────────────────────
-//    完全对齐 verfifier/post_check_prompts/ 中的两个检查维度：
-//    01_rl_value   : RL 训练价值 + 基础质量
-//    02_test_quality: 测试代码 + 环境配置质量
+//    对齐 verfifier/post_check_prompts/:
+//    01_rl_value    : 8 基础质量 + 5 RL 训练价值
+//    02_test_quality: 5 测试与环境质量维度
 
 async function runPostCheck(job) {
   broadcast(job.taskId, 'post-running', {});
@@ -452,20 +493,26 @@ async function runPostCheck(job) {
     const files = await readTaskFiles(job.slug);
     const { generateWithOpenRouter } = await import('./aiService/openrouterProvider.js');
 
+    const allFilesBlock =
+      `=== instruction.md ===\n${files['instruction.md'] || '(empty)'}\n\n` +
+      `=== solution/solve.sh ===\n${files['solution/solve.sh'] || '(empty)'}\n\n` +
+      `=== tests/test.sh ===\n${files['tests/test.sh'] || '(empty)'}\n\n` +
+      `=== environment/Dockerfile ===\n${files['environment/Dockerfile'] || '(empty)'}`;
+
     const [check01, check02] = await Promise.all([
-      _postCheck01_QualityBaseline(job, files, generateWithOpenRouter),
-      _postCheck02_TrainingValue(job, files, generateWithOpenRouter),
+      _postCheck01_RLValueQuality(job, allFilesBlock, generateWithOpenRouter),
+      _postCheck02_TestQuality(job, allFilesBlock, generateWithOpenRouter),
     ]);
 
     const passed  = check01.passed && check02.passed;
     const issues  = [...(check01.issues || []), ...(check02.issues || [])];
-    const result  = { passed, issues, details: { quality_baseline: check01, training_value: check02 } };
+    const result  = { passed, issues, details: { rl_value_quality: check01, test_quality: check02 } };
 
     broadcast(job.taskId, 'post-done', result);
     log(job, passed ? 'info' : 'warn',
       `  [PostCheck] ${passed
         ? '✅ both audits passed'
-        : `❌ ${issues.length} issue(s) — baseline=${check01.passed?'pass':'fail'}, training=${check02.passed?'pass':'fail'}`}`);
+        : `❌ ${issues.length} issue(s) — rl_value=${check01.passed?'pass':'fail'}, test_quality=${check02.passed?'pass':'fail'}`}`);
     return result;
   } catch (err) {
     log(job, 'warn', `  [PostCheck] Error: ${err.message} — skipped`);
@@ -474,77 +521,16 @@ async function runPostCheck(job) {
   }
 }
 
-// ── 6a. 质量基线 (Quality Baseline) — TB Post-Check Part 1 ──────────────────
-//   mirrors the "质量基线" section of the TB Step-6 audit template
-
-async function _postCheck01_QualityBaseline(job, files, generateWithOpenRouter) {
-  const system = `\
-You are performing the TB submission Step-6 post-check: 质量基线 (Quality Baseline).
-Evaluate the 4 baseline items below and return ONLY valid JSON (no code fences):
-
-1. 文字错误 (Typos / Grammar)
-   FAIL if: obvious spelling mistakes or grammatical errors appear in instruction.md
-
-2. 表述一致性 (Consistency)
-   FAIL if: instruction.md, solution/solve.sh, and tests/test.sh describe / implement / verify
-   DIFFERENT behaviours — e.g. instruction says parse SQL but tests check YAML output
-
-3. 答案推导过程 (Solution Reasoning)
-   FAIL if: solve.sh does NOT write code inline (e.g. bare "cp /solution/x /app/x" with no logic)
-   solve.sh MUST show actual problem-solving steps using cat << 'EOF', inline commands, etc.
-
-4. 数据结构定义 (Data Schema)
-   FAIL if: instruction.md requires structured output (JSON / YAML / CSV / etc.) but the
-   field names, types, and nesting are NOT explicitly defined in instruction.md
-   (NOT_APPLICABLE if the task produces no structured output)
-
-{"passed": true|false, "issues": ["<item number + specific problem>", ...]}
-"passed" is true only when issues array is empty.`;
-
-  const user =
-    `=== instruction.md ===\n${files['instruction.md'] || '(empty)'}\n\n` +
-    `=== solution/solve.sh ===\n${files['solution/solve.sh'] || '(empty)'}\n\n` +
-    `=== tests/test.sh ===\n${files['tests/test.sh'] || '(empty)'}`;
-
-  return _parsePostCheckJSON(await _aiCallPost(job, user, system, generateWithOpenRouter));
+async function _postCheck01_RLValueQuality(job, allFilesBlock, generateWithOpenRouter) {
+  return _parsePostCheckJSON(
+    await _aiCallPost(job, `Review this task:\n\n${allFilesBlock}`, POST_CHECK_01_SYSTEM, generateWithOpenRouter)
+  );
 }
 
-// ── 6b. 模型训练效用 (Training Effectiveness) — TB Post-Check Part 2 ─────────
-//   mirrors the "模型训练效用" section of the TB Step-6 audit template
-
-async function _postCheck02_TrainingValue(job, files, generateWithOpenRouter) {
-  const system = `\
-You are performing the TB submission Step-6 post-check: 模型训练效用 (Training Effectiveness).
-Evaluate the 4 training-value dimensions below and return ONLY valid JSON (no code fences):
-
-1. 认知负荷 (Cognitive Load)
-   Classify as: 深度推理/系统建模 (PASS) | 常规操作 (PASS) | 重复劳动 (FAIL)
-   FAIL if: the task is pure mechanical repetition with zero reasoning or planning required
-
-2. 实用价值 (Practical Value)
-   Classify as: 高实用 (PASS) | 能力提升 (PASS) | 无收益 (FAIL)
-   FAIL if: the task is a fabricated toy problem with no real-world engineering applicability
-
-3. 解法空间 (Solution Space)
-   Classify as: 目标驱动 (PASS) | 约束引导 (PASS) | 接口契约 (PASS) | 填鸭式指令 (FAIL)
-   FAIL if: instruction.md provides complete step-by-step commands leaving nothing for the
-   agent to plan — agent only needs to copy-paste instructions in order
-
-4. 虚假复杂度 (Artificial Complexity)
-   Classify as: 无 (PASS) | 存在 (FAIL)
-   FAIL if ANY of:
-   - Tools banned with no legitimate engineering rationale (e.g. "do not use grep")
-   - Error logs or config that should normally be accessible are deliberately hidden
-   - Anti-intuitive requirements with no plausible training purpose
-
-{"passed": true|false, "issues": ["<dimension + classification + specific reason>", ...]}
-"passed" is true only when issues array is empty.`;
-
-  const user =
-    `=== instruction.md ===\n${files['instruction.md'] || '(empty)'}\n\n` +
-    `=== solution/solve.sh ===\n${files['solution/solve.sh'] || '(empty)'}`;
-
-  return _parsePostCheckJSON(await _aiCallPost(job, user, system, generateWithOpenRouter));
+async function _postCheck02_TestQuality(job, allFilesBlock, generateWithOpenRouter) {
+  return _parsePostCheckJSON(
+    await _aiCallPost(job, `Review this task:\n\n${allFilesBlock}`, POST_CHECK_02_SYSTEM, generateWithOpenRouter)
+  );
 }
 
 // Post-check calls use postCheckModel (claude-opus by default — matches TB Step 6 "Claude review")
@@ -604,8 +590,8 @@ Fix guidelines per source:
 • oracle             → fix solve.sh to correctly implement the task; fix test.sh to correctly validate; fix Dockerfile if dependencies are missing
 • lint               → fix exactly what each harbor check item requires (pin deps with ==, remove test deps from Dockerfile, align file references, etc.)
 • instruction-quality → ${INSTR_FIX_GUIDANCE}
-• agent-test         → analyse the output; if 0/N passed, the task is likely broken: fix tests/test.sh, Dockerfile, or clarify instruction.md
-• post-check         → fix quality issues: make solve.sh write code inline, align instruction↔tests, remove arbitrary constraints, add missing schema definitions
+• agent-test         → analyse the output; if 0/N passed, the task is likely broken: fix tests/test.sh, Dockerfile, or clarify instruction.md; if N/N passed (too easy), increase task difficulty or complexity
+• ${POST_CHECK_FIX_GUIDANCE}
 
 Rules: include ALL 5 files; preserve core task logic; complete content, no placeholders.`;
 
@@ -722,6 +708,14 @@ function collectLines(child, onLine) {
   child.stdout.on('data', handle);
   child.stderr.on('data', handle);
   return lines;
+}
+
+async function _writeRunLog(logFile, title, slug, cmd, lines, exitCode, elapsedMs) {
+  const started = new Date(Date.now() - elapsedMs).toISOString();
+  const ended   = new Date().toISOString();
+  const sep     = '─'.repeat(72);
+  const header  = `=== ${title} ===\nTask:  ${slug}\nCmd:   ${cmd}\nStart: ${started}\nEnd:   ${ended}\nExit:  ${exitCode}  Elapsed: ${Math.round(elapsedMs / 1000)}s\n${sep}`;
+  try { await writeFile(logFile, header + '\n' + lines.join('\n'), 'utf-8'); } catch { }
 }
 
 const slim = r => ({ passed: r.passed, issues: r.issues, skipped: r.skipped, timedOut: r.timedOut });

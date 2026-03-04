@@ -1,26 +1,5 @@
 import pool from '../../db/client.js';
-
-// ── Debug logging ─────────────────────────────────────────────────────────────
-// 调试阶段打印模型交互日志；后续关闭：在 server/.env 中设置 AI_LOG=0
-const AI_LOG = process.env.AI_LOG !== '0';
-
-function aiDebugLog(model, systemPrompt, userPrompt, response, elapsedMs) {
-  if (!AI_LOG) return;
-  const sep = '─'.repeat(72);
-  const trunc = (s, n) => s.length > n ? s.slice(0, n) + `…(+${s.length - n})` : s;
-  console.log(`\n┌${sep}┐`);
-  console.log(`│ [AI] model=${model}  elapsed=${elapsedMs}ms`);
-  console.log(`├${sep}┤`);
-  console.log(`│ SYSTEM (${systemPrompt.length} chars):`);
-  console.log(`│ ${trunc(systemPrompt.replace(/\n/g, '\n│ '), 400)}`);
-  console.log(`├${sep}┤`);
-  console.log(`│ USER (${userPrompt.length} chars):`);
-  console.log(`│ ${trunc(userPrompt.replace(/\n/g, '\n│ '), 300)}`);
-  console.log(`├${sep}┤`);
-  console.log(`│ RESPONSE (${response.length} chars):`);
-  console.log(`│ ${trunc(response.replace(/\n/g, '\n│ '), 600)}`);
-  console.log(`└${sep}┘\n`);
-}
+import { logCurlRequest, logCurlResponse, logRawSseSample, logResponseMeta } from './aiLogger.js';
 
 async function getApiKey() {
   const result = await pool.query("SELECT value FROM settings WHERE key = 'openrouter_api_key'");
@@ -66,19 +45,23 @@ export async function generateWithOpenRouter(systemPrompt, userPrompt, onChunk, 
     headers['Authorization'] = `Bearer ${apiKey}`;
   }
 
-  console.log(`[AI] → ${apiBase}/chat/completions  model=${model}  hasKey=${!!apiKey}`);
-  const response = await fetch(`${apiBase}/chat/completions`, {
+  const requestBody = {
+    model,
+    max_tokens: 4096,
+    stream: false,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+  };
+
+  const url = `${apiBase}/chat/completions`;
+  logCurlRequest(url, headers, requestBody);
+
+  const response = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model,
-      max_tokens: 4096,
-      stream: true,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -86,11 +69,31 @@ export async function generateWithOpenRouter(systemPrompt, userPrompt, onChunk, 
     throw new Error(`OpenRouter API error (${response.status}): ${text}`);
   }
 
+  const t0 = Date.now();
+  const contentType = response.headers.get('content-type') || '';
+  logResponseMeta(response.status, contentType);
+
+  if (contentType.includes('application/json')) {
+    const text = await response.text();
+    logRawSseSample([text.slice(0, 200)]);
+    try {
+      const json = JSON.parse(text);
+      const content = json.choices?.[0]?.message?.content
+        ?? json.choices?.[0]?.delta?.content
+        ?? '';
+      if (onChunk && content) onChunk(content);
+      logCurlResponse(model, Date.now() - t0, content);
+      return content;
+    } catch {
+      throw new Error(`Non-streaming response from ${url}: ${text.slice(0, 200)}`);
+    }
+  }
+
   let fullText = '';
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  const t0 = Date.now();
+  let rawLogged = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -100,14 +103,22 @@ export async function generateWithOpenRouter(systemPrompt, userPrompt, onChunk, 
     const lines = buffer.split('\n');
     buffer = lines.pop() || '';
 
+    if (!rawLogged && lines.length > 0) {
+      logRawSseSample(lines);
+      rawLogged = true;
+    }
+
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed || trimmed === 'data: [DONE]') continue;
-      if (!trimmed.startsWith('data: ')) continue;
+      if (!trimmed || !trimmed.startsWith('data:')) continue;
+      const payload = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed.slice(5);
+      if (payload === '[DONE]') continue;
 
       try {
-        const json = JSON.parse(trimmed.slice(6));
-        const chunk = json.choices?.[0]?.delta?.content || '';
+        const json = JSON.parse(payload);
+        const chunk = json.choices?.[0]?.delta?.content
+          ?? json.choices?.[0]?.message?.content
+          ?? '';
         if (chunk) {
           fullText += chunk;
           if (onChunk) onChunk(chunk);
@@ -118,6 +129,10 @@ export async function generateWithOpenRouter(systemPrompt, userPrompt, onChunk, 
     }
   }
 
-  aiDebugLog(model, systemPrompt, userPrompt, fullText, Date.now() - t0);
+  if (buffer.trim()) {
+    logRawSseSample([`[unprocessed buffer] ${buffer.trim().slice(0, 160)}`]);
+  }
+
+  logCurlResponse(model, Date.now() - t0, fullText);
   return fullText;
 }

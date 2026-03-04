@@ -10,6 +10,7 @@
  */
 
 import { getMetrics } from './resourceMonitor.js';
+import { getQueueSettings } from './settingsService.js';
 
 // ── Configurable limits (can be patched at runtime via PATCH /api/resources/limits) ──
 export const LIMITS = {
@@ -116,4 +117,22 @@ export function updateLimits(patch) {
     LIMITS.cpuThreshold = parseFloat(patch.cpuThreshold);
   if (patch.memoryThreshold !== undefined)
     LIMITS.memoryThreshold = parseFloat(patch.memoryThreshold);
+}
+
+/**
+ * Load queue limits from DB settings and apply to in-memory LIMITS.
+ * Called once on server startup and can be called again to refresh.
+ */
+export async function loadFromSettings() {
+  try {
+    const settings = await getQueueSettings();
+    updateLimits(settings);
+    console.log('[Queue] Loaded limits from DB:', {
+      maxConcurrentApi: LIMITS.maxConcurrentApi,
+      cpuThreshold: LIMITS.cpuThreshold,
+      memoryThreshold: LIMITS.memoryThreshold,
+    });
+  } catch (err) {
+    console.warn('[Queue] Could not load settings from DB, using defaults:', err.message);
+  }
 }

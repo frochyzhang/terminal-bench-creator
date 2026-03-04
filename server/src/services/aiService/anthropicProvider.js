@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import pool from '../../db/client.js';
+import { logCurlRequest, logCurlResponse } from './aiLogger.js';
 
 async function getApiKey() {
   const result = await pool.query("SELECT value FROM settings WHERE key = 'anthropic_api_key'");
@@ -24,7 +25,20 @@ export async function generateWithAnthropic(systemPrompt, userPrompt, onChunk) {
   const model = await getModel();
   const client = new Anthropic({ apiKey });
 
+  logCurlRequest('https://api.anthropic.com/v1/messages', {
+    'x-api-key':          apiKey,
+    'anthropic-version':  '2023-06-01',
+    'Content-Type':       'application/json',
+  }, {
+    model,
+    max_tokens: 4096,
+    stream: true,
+    system:   systemPrompt,
+    messages: [{ role: 'user', content: userPrompt }],
+  });
+
   let fullText = '';
+  const t0 = Date.now();
 
   const stream = client.messages.stream({
     model,
@@ -41,5 +55,6 @@ export async function generateWithAnthropic(systemPrompt, userPrompt, onChunk) {
     }
   }
 
+  logCurlResponse(model, Date.now() - t0, fullText);
   return fullText;
 }

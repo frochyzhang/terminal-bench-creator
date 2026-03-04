@@ -14,7 +14,7 @@ const router = Router({ mergeParams: true });
 router.post('/', async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { maxRetries = 10, model = 'openrouter/deepseek/deepseek-v3.2' } = req.body;
+    const { maxRetries = 10, model = 'deepseek/deepseek-v3.2' } = req.body;
 
     const result = await pool.query(
       'SELECT id, slug FROM tasks WHERE id::text = $1 OR slug = $1',

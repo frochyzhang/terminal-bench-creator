@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pool from '../db/client.js';
 import { testConnection } from '../services/tbApiService.js';
+import { updateLimits } from '../services/queueService.js';
 
 const router = Router();
 
@@ -61,6 +62,20 @@ router.put('/', async (req, res, next) => {
       throw err;
     } finally {
       client.release();
+    }
+
+    const queuePatch = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (key === 'queue_max_concurrent' && value)
+        queuePatch.maxConcurrentApi = value;
+      else if (key === 'queue_cpu_threshold' && value)
+        queuePatch.cpuThreshold = value;
+      else if (key === 'queue_mem_threshold' && value)
+        queuePatch.memoryThreshold = value;
+    }
+    if (Object.keys(queuePatch).length > 0) {
+      updateLimits(queuePatch);
+      console.log('[Settings] Synced queue limits to queueService:', queuePatch);
     }
 
     res.json({ message: 'Settings updated' });

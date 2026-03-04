@@ -4,6 +4,7 @@ import app from './app.js';
 import { config } from './config.js';
 import { recoverPolling } from './services/pollService.js';
 import { startMonitoring } from './services/resourceMonitor.js';
+import { loadFromSettings } from './services/queueService.js';
 
 async function start() {
   // Ensure tasks directory exists
@@ -14,6 +15,13 @@ async function start() {
     console.log(`[Server] Tasks directory: ${config.tasksDir}`);
     console.log(`[Server] Environment: ${config.nodeEnv}`);
   });
+
+  // Load queue limits from DB settings
+  try {
+    await loadFromSettings();
+  } catch (err) {
+    console.warn('[Server] Could not load queue settings (DB may not be ready):', err.message);
+  }
 
   // Recover in-progress polls from DB
   try {

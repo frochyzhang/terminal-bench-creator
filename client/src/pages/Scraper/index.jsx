@@ -11,7 +11,7 @@ import {
 } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { startScrape, stopScrape, pauseScrape, resumeScrape, previewSO, getScrapeStatus } from '../../api/scraper.js';
-import { getResources, updateLimits } from '../../api/resources.js';
+
 import { useSSE } from '../../hooks/useSSE.js';
 
 const { Title, Text, Paragraph } = Typography;
@@ -36,7 +36,7 @@ const TAG_PRESETS = [
 const ALL_TAGS = [...new Set(TAG_PRESETS.flatMap(p => p.tags))];
 
 const DEEPSEEK_MODELS = [
-  { value: 'deepseek/deepseek-chat',              label: 'DeepSeek V3 (fast)' },
+  { value: 'deepseek/deepseek-v3.2',              label: 'DeepSeek V3.2' },
   { value: 'deepseek/deepseek-r1',                label: 'DeepSeek R1' },
   { value: 'anthropic/claude-opus-4-6',           label: 'Claude Opus 4.6' },
   { value: 'anthropic/claude-sonnet-4-6',         label: 'Claude Sonnet 4.6' },
@@ -45,9 +45,9 @@ const DEEPSEEK_MODELS = [
 ];
 
 const SCREENING_MODELS = [
-  { value: 'openrouter/anthropic/claude-opus-4.5',   label: 'Claude Opus 4.5 (recommended)' },
-  { value: 'openrouter/anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
-  { value: 'openrouter/anthropic/claude-opus-4-6',   label: 'Claude Opus 4.6' },
+  { value: 'anthropic/claude-opus-4.5',   label: 'Claude Opus 4.5 (recommended)' },
+  { value: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
+  { value: 'anthropic/claude-opus-4-6',   label: 'Claude Opus 4.6' },
 ];
 
 // ── Log panel ─────────────────────────────────────────────────────────────────
@@ -182,6 +182,10 @@ export default function Scraper() {
   const [previewData, setPreviewData] = useState(null);
   const [currentTask, setCurrentTask] = useState(null);
 
+  // Watch toggle states for conditional rendering
+  const screeningEnabled = Form.useWatch('screening', form);
+  const polishEnabled = Form.useWatch('polish', form);
+
   // Load existing job status on mount
   useEffect(() => {
     getScrapeStatus().then(job => {
@@ -193,16 +197,7 @@ export default function Scraper() {
       setProgress(job.progress || { current: 0, total: 0 });
     }).catch(() => {});
 
-    // Backfill current queue limits into form
-    getResources().then(r => {
-      const q = r.queue;
-      if (!q) return;
-      form.setFieldsValue({
-        maxConcurrentApi: q.maxConcurrentApi,
-        cpuThreshold:     q.cpuThreshold,
-        memoryThreshold:  q.memoryThreshold,
-      });
-    }).catch(() => {});
+
   }, []);
 
   // SSE subscription
@@ -265,21 +260,11 @@ export default function Scraper() {
   }, [logs]);
 
   async function handleStart(values) {
-    // Push queue limits before starting (non-blocking; ignore errors)
-    updateLimits({
-      maxConcurrentApi: values.maxConcurrentApi,
-      cpuThreshold:     values.cpuThreshold,
-      memoryThreshold:  values.memoryThreshold,
-    }).catch(() => {});
-
     const config = {
       tags: values.tags?.join(';') || 'bash;linux',
       query: values.query || '',
       maxTasks: values.maxTasks,
       model: values.model,
-      soDelay: values.soDelay,
-      aiDelay: values.aiDelay,
-      taskDelay: values.taskDelay,
       minScore: values.minScore,
       terminalOnly: values.terminalOnly,
       skipExisting: values.skipExisting,
@@ -287,7 +272,7 @@ export default function Scraper() {
       apiKey: values.soApiKey || '',
       screening: values.screening ?? true,
       screeningTimeout: values.screeningTimeout ?? 180,
-      screeningModel: values.screeningModel || 'openrouter/anthropic/claude-opus-4.5',
+      screeningModel: values.screeningModel || 'anthropic/claude-opus-4.5',
       polish: values.polish ?? true,
       polishMaxRounds: values.polishMaxRounds ?? 5,
       agentAttempts: values.agentAttempts ?? 1,
@@ -338,12 +323,17 @@ export default function Scraper() {
       </div>
 
       <Row gutter={16}>
-        {/* ── Config Panel ── */}
+        {/* ── Config Panel (Redesigned) ── */}
         <Col span={10}>
           <Card
-            title="Pipeline Configuration"
+            title={
+              <Space>
+                <RobotOutlined style={{ color: '#1677ff' }} />
+                <span>SO Auto Scraper</span>
+              </Space>
+            }
             size="small"
-            styles={{ header: { background: '#1a1a2e' } }}
+            styles={{ header: { background: '#fff', borderBottom: '1px solid #f0f0f0' } }}
           >
             <Form
               form={form}
@@ -353,36 +343,34 @@ export default function Scraper() {
               initialValues={{
                 tags: ['bash', 'linux'],
                 maxTasks: 5,
-                model: 'deepseek/deepseek-chat',
-                soDelay: 2000,
-                aiDelay: 2000,
-                taskDelay: 3000,
+                model: 'deepseek/deepseek-v3.2',
                 minScore: 5,
                 terminalOnly: true,
                 skipExisting: true,
                 difficulty: 'Medium',
                 screening: true,
                 screeningTimeout: 180,
-                screeningModel: 'openrouter/anthropic/claude-opus-4.5',
+                screeningModel: 'anthropic/claude-opus-4.5',
                 polish: true,
                 polishMaxRounds: 5,
                 agentAttempts: 1,
-                maxConcurrentApi: 3,
-                cpuThreshold: 80,
-                memoryThreshold: 90,
               }}
             >
-              {/* Tag Presets */}
-              <div style={{ marginBottom: 6 }}>
-                <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 4 }}>
-                  Domain presets (click to set tags):
-                </Text>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {/* ── Tag Presets (pill-shaped) ── */}
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {TAG_PRESETS.map(p => (
                     <Tag
                       key={p.label}
-                      color="default"
-                      style={{ cursor: 'pointer', fontSize: 10, userSelect: 'none' }}
+                      style={{
+                        cursor: 'pointer',
+                        fontSize: 11,
+                        borderRadius: 100,
+                        padding: '2px 14px',
+                        userSelect: 'none',
+                        transition: 'all 0.15s',
+                        border: '1px solid #e8e8e8',
+                      }}
                       onClick={() => form.setFieldValue('tags', p.tags)}
                     >
                       {p.label}
@@ -391,7 +379,8 @@ export default function Scraper() {
                 </div>
               </div>
 
-              <Form.Item label="SO Tags" name="tags" rules={[{ required: true }]}>
+              {/* ── SO Tags ── */}
+              <Form.Item label="SO Tags" name="tags" rules={[{ required: true }]} style={{ marginBottom: 12 }}>
                 <Select
                   mode="tags"
                   placeholder="bash, linux, shell…"
@@ -399,192 +388,172 @@ export default function Scraper() {
                 />
               </Form.Item>
 
-              <Form.Item label="Title keyword (optional)" name="query">
-                <Input placeholder="e.g. find files, parse log" prefix={<SearchOutlined />} />
-              </Form.Item>
+              {/* ── Row: AI Model + Max Tasks ── */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <Form.Item label="AI Model" name="model" style={{ flex: 1, marginBottom: 0 }}>
+                  <Select options={DEEPSEEK_MODELS} />
+                </Form.Item>
+                <Form.Item label="Max Tasks" name="maxTasks" style={{ width: 110, marginBottom: 0 }}>
+                  <InputNumber min={1} max={50} style={{ width: '100%' }} />
+                </Form.Item>
+              </div>
 
-              <Form.Item label="AI Model (task generation + polish)" name="model">
-                <Select options={DEEPSEEK_MODELS} />
-              </Form.Item>
+              {/* ── Row: Min Score + Difficulty + Inline Switches ── */}
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 16 }}>
+                <Form.Item label="Min Score" name="minScore" style={{ width: 90, marginBottom: 0 }}>
+                  <InputNumber min={0} max={1000} style={{ width: '100%' }} />
+                </Form.Item>
+                <Form.Item label="Difficulty" name="difficulty" style={{ width: 120, marginBottom: 0 }}>
+                  <Select>
+                    <Select.Option value="Easy">Easy</Select.Option>
+                    <Select.Option value="Medium">Medium</Select.Option>
+                    <Select.Option value="Hard">Hard</Select.Option>
+                  </Select>
+                </Form.Item>
+                <div style={{ display: 'flex', gap: 14, alignItems: 'center', paddingBottom: 5, marginLeft: 'auto' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <Form.Item name="terminalOnly" valuePropName="checked" style={{ marginBottom: 0 }}>
+                      <Switch size="small" />
+                    </Form.Item>
+                    <Text style={{ fontSize: 11, color: '#595959', whiteSpace: 'nowrap' }}>Terminal-only</Text>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                    <Form.Item name="skipExisting" valuePropName="checked" style={{ marginBottom: 0 }}>
+                      <Switch size="small" />
+                    </Form.Item>
+                    <Text style={{ fontSize: 11, color: '#595959', whiteSpace: 'nowrap' }}>Skip existing</Text>
+                  </div>
+                </div>
+              </div>
 
-              <Row gutter={8}>
-                <Col span={8}>
-                  <Form.Item label="Max Tasks" name="maxTasks">
-                    <InputNumber min={1} max={50} style={{ width: '100%' }} />
-                  </Form.Item>
-                </Col>
-                <Col span={8}>
-                  <Form.Item label="Min Score" name="minScore">
-                    <InputNumber min={0} max={1000} style={{ width: '100%' }} />
-                  </Form.Item>
-                </Col>
-                <Col span={8}>
-                  <Form.Item label="Difficulty" name="difficulty">
-                    <Select>
-                      <Select.Option value="Easy">Easy</Select.Option>
-                      <Select.Option value="Medium">Medium</Select.Option>
-                      <Select.Option value="Hard">Hard</Select.Option>
-                    </Select>
-                  </Form.Item>
-                </Col>
-              </Row>
+              {/* ── Section: Pipeline Steps ── */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 10px' }}>
+                <div style={{ width: 4, height: 16, borderRadius: 2, background: '#1677ff' }} />
+                <Text strong style={{ fontSize: 13, color: '#262626' }}>Pipeline Steps</Text>
+              </div>
 
-              <Row gutter={16} style={{ marginBottom: 8 }}>
-                <Col>
-                  <Form.Item name="terminalOnly" valuePropName="checked" label="Terminal-only" style={{ marginBottom: 0 }}>
+              {/* ── Screening Toggle Card ── */}
+              <div style={{
+                border: `1px solid ${screeningEnabled ? '#b7eb8f' : '#f0f0f0'}`,
+                background: screeningEnabled ? '#f6ffed' : '#fafafa',
+                borderRadius: 8,
+                padding: '10px 14px',
+                marginBottom: 10,
+                transition: 'all 0.3s ease',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Space size={6}>
+                    <Text strong style={{ fontSize: 12.5 }}>Screening</Text>
+                    <Text type="secondary" style={{ fontSize: 11 }}>discard easy tasks</Text>
+                  </Space>
+                  <Form.Item name="screening" valuePropName="checked" style={{ marginBottom: 0 }}>
                     <Switch size="small" />
                   </Form.Item>
-                </Col>
-                <Col>
-                  <Form.Item name="skipExisting" valuePropName="checked" label="Skip existing" style={{ marginBottom: 0 }}>
+                </div>
+                {screeningEnabled && (
+                  <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                    <Tooltip title="If the agent solves the task within this time, it's too easy → discard">
+                      <Form.Item label="Timeout (s)" name="screeningTimeout" style={{ marginBottom: 0, width: 110 }}>
+                        <InputNumber min={60} max={600} step={30} style={{ width: '100%' }} />
+                      </Form.Item>
+                    </Tooltip>
+                    <Form.Item label="Screening Model" name="screeningModel" style={{ marginBottom: 0, flex: 1 }}>
+                      <Select options={SCREENING_MODELS} />
+                    </Form.Item>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Polish Toggle Card ── */}
+              <div style={{
+                border: `1px solid ${polishEnabled ? '#b7eb8f' : '#f0f0f0'}`,
+                background: polishEnabled ? '#f6ffed' : '#fafafa',
+                borderRadius: 8,
+                padding: '10px 14px',
+                marginBottom: 12,
+                transition: 'all 0.3s ease',
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Space size={6}>
+                    <Text strong style={{ fontSize: 12.5 }}>Polish</Text>
+                    <Text type="secondary" style={{ fontSize: 11 }}>lint fix → auto-submit</Text>
+                  </Space>
+                  <Form.Item name="polish" valuePropName="checked" style={{ marginBottom: 0 }}>
                     <Switch size="small" />
                   </Form.Item>
-                </Col>
-                <Col flex={1}>
-                  <Form.Item label="SO API Key" name="soApiKey" style={{ marginBottom: 0 }}>
-                    <Input.Password placeholder="optional, for higher quota" size="small" />
-                  </Form.Item>
-                </Col>
-              </Row>
+                </div>
+                {polishEnabled && (
+                  <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                    <Form.Item label="Max rounds" name="polishMaxRounds" style={{ marginBottom: 0, width: 100 }}>
+                      <InputNumber min={1} max={10} step={1} style={{ width: '100%' }} />
+                    </Form.Item>
+                    <Tooltip title="Agent check: run terminus-2 N times to verify task difficulty. 0 = skip.">
+                      <Form.Item label="Agent attempts" name="agentAttempts" style={{ marginBottom: 0, width: 140 }}>
+                        <Select options={[
+                          { value: 0, label: 'Skip (0)' },
+                          { value: 1, label: '1 attempt' },
+                          { value: 2, label: '2 attempts' },
+                          { value: 4, label: '4 attempts' },
+                        ]} />
+                      </Form.Item>
+                    </Tooltip>
+                  </div>
+                )}
+              </div>
 
-              {/* Rate Control — collapsed by default */}
+              {/* ── Advanced Settings (collapsed) ── */}
               <Collapse
                 ghost
                 size="small"
                 style={{ marginBottom: 8 }}
                 items={[{
-                  key: 'rate',
-                  label: <Text type="secondary" style={{ fontSize: 12 }}>Rate Control / Queue</Text>,
+                  key: 'advanced',
+                  label: <Text type="secondary" style={{ fontSize: 12 }}>Advanced Settings</Text>,
                   children: (
                     <>
-                      <Row gutter={8}>
-                        <Col span={8}>
-                          <Form.Item label="SO delay (ms)" name="soDelay">
-                            <InputNumber min={500} max={30000} step={500} style={{ width: '100%' }} />
-                          </Form.Item>
-                        </Col>
-                        <Col span={8}>
-                          <Form.Item label="AI delay (ms)" name="aiDelay">
-                            <InputNumber min={500} max={30000} step={500} style={{ width: '100%' }} />
-                          </Form.Item>
-                        </Col>
-                        <Col span={8}>
-                          <Form.Item label="Task delay (ms)" name="taskDelay">
-                            <InputNumber min={500} max={30000} step={500} style={{ width: '100%' }} />
-                          </Form.Item>
-                        </Col>
-                      </Row>
-                      <Row gutter={8}>
-                        <Col span={8}>
-                          <Tooltip title="Max simultaneous AI API calls (global semaphore)">
-                            <Form.Item label="API concurrency" name="maxConcurrentApi">
-                              <InputNumber min={1} max={20} step={1} style={{ width: '100%' }} />
-                            </Form.Item>
-                          </Tooltip>
-                        </Col>
-                        <Col span={8}>
-                          <Tooltip title="Pause new AI calls when CPU load exceeds this %">
-                            <Form.Item label="CPU gate (%)" name="cpuThreshold">
-                              <InputNumber min={10} max={100} step={5} style={{ width: '100%' }} />
-                            </Form.Item>
-                          </Tooltip>
-                        </Col>
-                        <Col span={8}>
-                          <Tooltip title="Pause new AI calls when memory usage exceeds this %">
-                            <Form.Item label="MEM gate (%)" name="memoryThreshold">
-                              <InputNumber min={10} max={100} step={5} style={{ width: '100%' }} />
-                            </Form.Item>
-                          </Tooltip>
-                        </Col>
-                      </Row>
+                      <Form.Item label="Title keyword (optional)" name="query" style={{ marginBottom: 10 }}>
+                        <Input placeholder="e.g. find files, parse log" prefix={<SearchOutlined />} />
+                      </Form.Item>
+                      <Form.Item label="SO API Key" name="soApiKey" style={{ marginBottom: 10 }}>
+                        <Input.Password placeholder="optional, for higher quota" size="small" />
+                      </Form.Item>
+
+
                     </>
                   ),
                 }]}
               />
 
-              {/* Screening */}
-              <Divider style={{ margin: '8px 0', fontSize: 11, color: '#888' }}>
-                Step 1 — Screening (discard too-easy tasks)
-              </Divider>
-
-              <Row gutter={8} align="middle" style={{ marginBottom: 8 }}>
-                <Col>
-                  <Form.Item name="screening" valuePropName="checked" label="Enable" style={{ marginBottom: 0 }}>
-                    <Switch size="small" />
-                  </Form.Item>
-                </Col>
-                <Col flex={1}>
-                  <Tooltip title="If the agent solves the task within this time, it's too easy → discard">
-                    <Form.Item label="Timeout (s)" name="screeningTimeout" style={{ marginBottom: 0 }}>
-                      <InputNumber min={60} max={600} step={30} style={{ width: 80 }} />
-                    </Form.Item>
-                  </Tooltip>
-                </Col>
-              </Row>
-              <Form.Item noStyle shouldUpdate={(p, c) => p.screening !== c.screening}>
-                {({ getFieldValue }) => getFieldValue('screening') && (
-                  <Form.Item label="Screening Model" name="screeningModel" style={{ marginBottom: 8 }}>
-                    <Select options={SCREENING_MODELS} />
-                  </Form.Item>
-                )}
-              </Form.Item>
-
-              {/* Polish */}
-              <Divider style={{ margin: '8px 0', fontSize: 11, color: '#888' }}>
-                Step 2 — Polish (6 checks → AI fix → auto-submit)
-              </Divider>
-
-              <Row gutter={8} align="middle" style={{ marginBottom: 8 }}>
-                <Col>
-                  <Form.Item name="polish" valuePropName="checked" label="Enable" style={{ marginBottom: 0 }}>
-                    <Switch size="small" />
-                  </Form.Item>
-                </Col>
-                <Form.Item noStyle shouldUpdate={(p, c) => p.polish !== c.polish}>
-                  {({ getFieldValue }) => getFieldValue('polish') && (
+              {/* ── Action Bar ── */}
+              <div style={{
+                borderTop: '1px solid #f0f0f0',
+                paddingTop: 12,
+                marginTop: 4,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}>
+                <Space>
+                  {!running ? (
+                    <Button type="primary" htmlType="submit" icon={<PlayCircleOutlined />}>
+                      Start
+                    </Button>
+                  ) : (
                     <>
-                      <Col>
-                        <Form.Item label="Max rounds" name="polishMaxRounds" style={{ marginBottom: 0 }}>
-                          <InputNumber min={1} max={10} step={1} style={{ width: 70 }} />
-                        </Form.Item>
-                      </Col>
-                      <Col>
-                        <Tooltip title="Agent check: run terminus-2 N times to verify task difficulty. 0 = skip.">
-                          <Form.Item label="Agent attempts" name="agentAttempts" style={{ marginBottom: 0 }}>
-                            <Select size="small" style={{ width: 110 }} options={[
-                              { value: 0, label: 'Skip (0)' },
-                              { value: 1, label: '1 attempt' },
-                              { value: 2, label: '2 attempts' },
-                              { value: 4, label: '4 attempts' },
-                            ]} />
-                          </Form.Item>
-                        </Tooltip>
-                      </Col>
+                      <Button
+                        icon={paused ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
+                        onClick={handlePauseResume}
+                      >
+                        {paused ? 'Resume' : 'Pause'}
+                      </Button>
+                      <Button danger icon={<StopOutlined />} onClick={handleStop}>Stop</Button>
                     </>
                   )}
-                </Form.Item>
-              </Row>
-
-              <Space style={{ marginTop: 4 }}>
-                {!running ? (
-                  <Button type="primary" htmlType="submit" icon={<PlayCircleOutlined />}>
-                    Start
-                  </Button>
-                ) : (
-                  <>
-                    <Button
-                      icon={paused ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
-                      onClick={handlePauseResume}
-                    >
-                      {paused ? 'Resume' : 'Pause'}
-                    </Button>
-                    <Button danger icon={<StopOutlined />} onClick={handleStop}>Stop</Button>
-                  </>
-                )}
+                </Space>
                 <Button icon={<EyeOutlined />} onClick={handlePreview} loading={previewing}>
                   Preview SO
                 </Button>
-              </Space>
+              </div>
             </Form>
 
             {/* SO Preview */}

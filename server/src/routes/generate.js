@@ -48,10 +48,17 @@ router.post('/', async (req, res, next) => {
       return;
     }
 
-    // Save the generated file
-    await writeTaskFile(task.slug, filename, generated);
+    console.log(`[Generate] ${filename}: generated ${generated.length} chars`);
 
-    // Run lint on all files
+    try {
+      await writeTaskFile(task.slug, filename, generated);
+    } catch (err) {
+      console.error(`[Generate] writeTaskFile failed for ${task.slug}/${filename}:`, err);
+      sendEvent('error', { message: `File save failed: ${err.message}` });
+      res.end();
+      return;
+    }
+
     const allFiles = { ...existingFiles, [filename]: generated };
     const lintResult = lintTask(allFiles);
 
@@ -106,9 +113,17 @@ router.post('/all', async (req, res, next) => {
         continue;
       }
 
-      await writeTaskFile(task.slug, filename, content);
-      generatedFiles[filename] = content;
+      console.log(`[Generate] ${filename}: generated ${content.length} chars`);
 
+      try {
+        await writeTaskFile(task.slug, filename, content);
+      } catch (err) {
+        console.error(`[Generate] writeTaskFile failed for ${task.slug}/${filename}:`, err);
+        sendEvent('file-error', { filename, message: `File save failed: ${err.message}` });
+        continue;
+      }
+
+      generatedFiles[filename] = content;
       sendEvent('file-done', { filename, content });
     }
 
