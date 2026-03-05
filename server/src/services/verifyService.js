@@ -173,7 +173,7 @@ function runHarborCheck(taskPath, job) {
       'set -a',
       `source "${VERIFIER_ENV}" 2>/dev/null || true`,
       'set +a',
-      `SKIP_EXISTING=false API_PROVIDER=openrouter bash "${VERIFIER_SCRIPT}" "${taskPath}" check`,
+      `SKIP_EXISTING=false API_PROVIDER=poe bash "${VERIFIER_SCRIPT}" "${taskPath}" check`,
     ].join('\n');
 
     const child = spawn('bash', ['-c', cmd], {
@@ -255,7 +255,7 @@ function parseCheckResult(raw) {
 // ── AI fix ────────────────────────────────────────────────────────────────────
 
 async function fixWithAI(job, checkResult, issues) {
-  const { generateWithOpenRouter } = await import('./aiService/openrouterProvider.js');
+  const { generateWithPoe } = await import('./aiService/poeProvider.js');
   const files = await readTaskFiles(job.slug);
 
   const systemPrompt = `You are an expert Terminal-Bench task author. Fix the failing harbor quality checks in the task files.
@@ -306,7 +306,7 @@ Please output the corrected <files> XML.`;
 
   let aiOutput = '';
   await runWithQueue(() =>
-    generateWithOpenRouter(systemPrompt, userPrompt, (chunk) => {
+    generateWithPoe(systemPrompt, userPrompt, (chunk) => {
       aiOutput += chunk;
       broadcast(job.taskId, 'ai-chunk', { chunk });
     }, job.model)

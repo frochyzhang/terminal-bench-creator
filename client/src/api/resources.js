@@ -1,6 +1,4 @@
-import axios from 'axios';
-
-const api = axios.create({ baseURL: '/api' });
+import api from './client.js';
 
 export const getResources = () => api.get('/resources').then(r => r.data);
 export const refreshResources = () => api.post('/resources/refresh').then(r => r.data);

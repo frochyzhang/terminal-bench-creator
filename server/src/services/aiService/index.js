@@ -1,6 +1,4 @@
-import pool from '../../db/client.js';
-import { generateWithAnthropic } from './anthropicProvider.js';
-import { generateWithOpenRouter } from './openrouterProvider.js';
+import { generateWithPoe } from './poeProvider.js';
 import { instructionSystemPrompt } from './prompts/instruction.js';
 import { dockerfileSystemPrompt } from './prompts/dockerfile.js';
 import { solveSystemPrompt } from './prompts/solve.js';
@@ -15,18 +13,13 @@ const SYSTEM_PROMPTS = {
   'task.toml': taskTomlSystemPrompt,
 };
 
-async function getProvider() {
-  const result = await pool.query("SELECT value FROM settings WHERE key = 'ai_provider'");
-  return result.rows[0]?.value || 'anthropic';
-}
-
 /**
  * Generate a single task file using AI.
  * @param {string} filename - The file to generate
  * @param {string} taskDescription - User's task description
  * @param {object} existingFiles - Already-generated files for context
  * @param {Function} onChunk - Streaming callback
- * @param {string} [modelOverride] - force a specific OpenRouter model (bypasses settings)
+ * @param {string} [modelOverride] - force a specific Poe model (bypasses settings)
  */
 export async function generateFile(filename, taskDescription, existingFiles = {}, onChunk, modelOverride) {
   const systemPrompt = SYSTEM_PROMPTS[filename];
@@ -49,18 +42,7 @@ export async function generateFile(filename, taskDescription, existingFiles = {}
 
   const userPrompt = contextParts.join('\n');
 
-  // modelOverride forces OpenRouter regardless of settings provider
-  if (modelOverride) {
-    return generateWithOpenRouter(systemPrompt, userPrompt, onChunk, modelOverride);
-  }
-
-  const provider = await getProvider();
-
-  if (provider === 'openrouter') {
-    return generateWithOpenRouter(systemPrompt, userPrompt, onChunk);
-  } else {
-    return generateWithAnthropic(systemPrompt, userPrompt, onChunk);
-  }
+  return generateWithPoe(systemPrompt, userPrompt, onChunk, modelOverride);
 }
 
 /**

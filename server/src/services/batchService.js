@@ -142,7 +142,7 @@ export async function startJob(config) {
     site:              config.site || 'stackoverflow',
     apiKey:            config.apiKey || '',
     maxTasks:          Math.min(config.maxTasks || 5, 50),
-    model:             config.model || 'deepseek/deepseek-v3.2',
+    model:             config.model || 'Claude-Sonnet-4.5',
     soDelay:           rate.soDelay,
     aiDelay:           rate.aiDelay,
     taskDelay:         rate.taskDelay,
@@ -152,7 +152,7 @@ export async function startJob(config) {
     terminalOnly:      config.terminalOnly ?? true,
     screening:         config.screening ?? true,
     screeningTimeout:  config.screeningTimeout ?? 180,
-    screeningModel:    config.screeningModel || 'anthropic/claude-opus-4.5',
+    screeningModel:    config.screeningModel || 'Claude-Opus-4.5',
     polish:            config.polish ?? true,
     polishMaxRounds:   config.polishMaxRounds ?? 5,
   };
@@ -299,7 +299,7 @@ async function runPipeline(cfg) {
  */
 async function generateAITaskSlug(q, model) {
   try {
-    const { generateWithOpenRouter } = await import('./aiService/openrouterProvider.js');
+    const { generateWithPoe } = await import('./aiService/poeProvider.js');
 
     const system = `Generate a concise technical slug for a Terminal-Bench programming challenge derived from a StackOverflow question.
 
@@ -316,7 +316,7 @@ Return ONLY the slug. No explanation, no quotes, no punctuation.`;
     const context = `Title: ${q.title}\nTags: ${(q.tags || []).join(', ')}`;
     let slug = '';
     await runWithQueue(() =>
-      generateWithOpenRouter(system, context, c => { slug += c; }, model)
+      generateWithPoe(system, context, c => { slug += c; }, model)
     );
 
     slug = slug.trim().toLowerCase()
@@ -386,7 +386,7 @@ async function processQuestion(q, cfg, baseSlug) {
     let content = '';
     try {
       content = await runWithQueue(() =>
-        callOpenRouter(systemPrompt, contextParts.join('\n'), cfg.model, chunk =>
+        callPoe(systemPrompt, contextParts.join('\n'), cfg.model, chunk =>
           broadcast('file-chunk', { slug, filename, chunk })
         )
       );
@@ -436,7 +436,12 @@ async function processQuestion(q, cfg, baseSlug) {
       return false; // signal: not kept
     }
 
-    log('info', `  [Screening] ✓ Task appropriately challenging (exit=${screenResult.exitCode}, ${screenResult.elapsed}s).`);
+    // Log why task was kept (agent failed or timed out)
+    const failureReason = screenResult.hasLogFailures ? 'infrastructure failure'
+      : screenResult.hasResultErrors ? 'agent error'
+      : screenResult.timedOut ? 'timeout'
+      : `non-zero exit (${screenResult.exitCode})`;
+    log('info', `  [Screening] ✓ Task appropriately challenging (${failureReason}, exit=${screenResult.exitCode}, ${screenResult.elapsed}s).`);
     await pool.query(
       'UPDATE tasks SET screening_elapsed_sec = $1 WHERE id = $2',
       [screenResult.elapsed, task.id]
@@ -470,7 +475,7 @@ async function processQuestion(q, cfg, baseSlug) {
       maxRounds:       cfg.polishMaxRounds,
       oracleTimeout:   600,
       agentAttempts:   cfg.agentAttempts ?? 1,
-      lintModel:       'deepseek/deepseek-v3.2',
+      lintModel:       'Claude-Sonnet-4.5',
       fixModel:        cfg.model,
       autoSubmit:      true,
       externalBroadcast,
@@ -485,8 +490,8 @@ async function processQuestion(q, cfg, baseSlug) {
 
 // ── Harbor screening ──────────────────────────────────────────────────────────
 
-function runHarborScreening(taskPath, model, timeoutSec, slug) {
-  return new Promise(resolve => {
+async function runHarborScreening(taskPath, model, timeoutSec, slug) {
+  return new Promise(async resolve => {
     const jobsDir = join(taskPath, 'harbor_jobs', 'screening');
 
     // Source the verifier .env, then run harbor agent with hard timeout
@@ -517,12 +522,71 @@ function runHarborScreening(taskPath, model, timeoutSec, slug) {
     child.stdout.on('data', () => {});
     child.stderr.on('data', () => {});
 
-    child.on('close', code => {
+    child.on('close', async code => {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const exitCode = code ?? 1;
-      // exit 124 = timeout (GNU timeout), any non-zero = failed/timeout
-      const tooEasy = exitCode === 0 && elapsed < timeoutSec;
-      resolve({ exitCode, elapsed, tooEasy, timedOut: exitCode === 124 });
+
+      // exit 124 = timeout (GNU timeout)
+      const timedOut = exitCode === 124;
+
+      // Default: if timeout or non-zero exit, treat as "not too easy"
+      if (timedOut || exitCode !== 0) {
+        resolve({ exitCode, elapsed, tooEasy: false, timedOut });
+        return;
+      }
+
+      // Exit code 0 and under timeout — but verify it actually succeeded
+      // by checking harbor's result.json and job.log for infrastructure failures
+      const fs = await import('fs/promises');
+
+      // 1. Check result.json for errors (n_errors > 0 or exception_stats present)
+      const resultPath = join(jobsDir, 'result.json');
+      let hasResultErrors = false;
+      try {
+        const resultContent = await fs.readFile(resultPath, 'utf-8');
+        const result = JSON.parse(resultContent);
+        // Check if any trial had errors
+        if (result.stats?.n_errors > 0) {
+          hasResultErrors = true;
+        }
+        // Check for exception_stats (indicates crashes during trials)
+        if (result.stats?.evals) {
+          for (const evalKey of Object.keys(result.stats.evals)) {
+            const evalData = result.stats.evals[evalKey];
+            if (evalData?.n_errors > 0 || Object.keys(evalData?.exception_stats || {}).length > 0) {
+              hasResultErrors = true;
+              break;
+            }
+          }
+        }
+      } catch {
+        // result.json doesn't exist or invalid — can't verify success, treat as "not too easy"
+        hasResultErrors = true;
+      }
+
+      // 2. Check job.log for installation/infrastructure failures
+      const jobLogPath = join(jobsDir, 'job.log');
+      let hasLogFailures = false;
+      try {
+        const logContent = await fs.readFile(jobLogPath, 'utf-8');
+        // Look for patterns indicating infrastructure failures (not agent failures)
+        if (logContent.includes('Failed to install') ||
+            logContent.includes('Trial') && logContent.includes('failed:')) {
+          hasLogFailures = true;
+        }
+      } catch {
+        // job.log doesn't exist — can't verify success, treat as "not too easy"
+        hasLogFailures = true;
+      }
+
+      // Only mark as "too easy" if:
+      // - Exit code 0 (no timeout/crash)
+      // - Elapsed < timeout (completed quickly)
+      // - NO errors in result.json
+      // - NO infrastructure failures in job.log
+      const tooEasy = !hasResultErrors && !hasLogFailures;
+
+      resolve({ exitCode, elapsed, tooEasy, timedOut, hasResultErrors, hasLogFailures });
     });
 
     child.on('error', err => {
@@ -534,9 +598,9 @@ function runHarborScreening(taskPath, model, timeoutSec, slug) {
   });
 }
 
-// ── OpenRouter helper (bypasses settings, uses explicit model) ────────────────
+// ── Poe helper (bypasses settings, uses explicit model) ───────────────────────
 
-async function callOpenRouter(systemPrompt, userPrompt, model, onChunk) {
-  const { generateWithOpenRouter } = await import('./aiService/openrouterProvider.js');
-  return generateWithOpenRouter(systemPrompt, userPrompt, onChunk, model);
+async function callPoe(systemPrompt, userPrompt, model, onChunk) {
+  const { generateWithPoe } = await import('./aiService/poeProvider.js');
+  return generateWithPoe(systemPrompt, userPrompt, onChunk, model);
 }

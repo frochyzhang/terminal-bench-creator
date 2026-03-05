@@ -6,14 +6,18 @@ import { updateLimits } from '../services/queueService.js';
 const router = Router();
 
 const SENSITIVE_KEYS = new Set([
-  'anthropic_api_key',
-  'openrouter_api_key',
   'tb_password',
   'tb_jwt_token',
 ]);
 
+function isSensitiveKey(key) {
+  if (SENSITIVE_KEYS.has(key)) return true;
+  if (key.endsWith('_api_key')) return true;
+  return false;
+}
+
 function maskValue(key, value) {
-  if (SENSITIVE_KEYS.has(key) && value && value.length > 8) {
+  if (isSensitiveKey(key) && value && value.length > 8) {
     return value.slice(0, 4) + '****' + value.slice(-4);
   }
   return value;
@@ -28,7 +32,7 @@ router.get('/', async (req, res, next) => {
       settings[row.key] = {
         value: maskValue(row.key, row.value),
         updated_at: row.updated_at,
-        isSensitive: SENSITIVE_KEYS.has(row.key),
+        isSensitive: isSensitiveKey(row.key),
       };
     }
     res.json(settings);

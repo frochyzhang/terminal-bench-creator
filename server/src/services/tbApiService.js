@@ -26,13 +26,6 @@ function buildMultipart(zipPath) {
   };
 }
 
-const SENSITIVE_KEYS = new Set([
-  'anthropic_api_key',
-  'openrouter_api_key',
-  'tb_password',
-  'tb_jwt_token',
-]);
-
 async function getSetting(key) {
   const result = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
   return result.rows[0]?.value || '';

@@ -36,18 +36,16 @@ const TAG_PRESETS = [
 const ALL_TAGS = [...new Set(TAG_PRESETS.flatMap(p => p.tags))];
 
 const DEEPSEEK_MODELS = [
-  { value: 'deepseek/deepseek-v3.2',              label: 'DeepSeek V3.2' },
-  { value: 'deepseek/deepseek-r1',                label: 'DeepSeek R1' },
-  { value: 'anthropic/claude-opus-4-6',           label: 'Claude Opus 4.6' },
-  { value: 'anthropic/claude-sonnet-4-6',         label: 'Claude Sonnet 4.6' },
-  { value: 'openai/gpt-4o',                       label: 'GPT-4o' },
-  { value: 'google/gemini-2.0-flash-001',         label: 'Gemini 2.0 Flash' },
+  { value: 'anthropic/Claude-Sonnet-4.5', label: 'Claude Sonnet 4.5 (recommended)' },
+  { value: 'anthropic/Claude-Opus-4.5',   label: 'Claude Opus 4.5' },
+  { value: 'anthropic/Claude-Sonnet-4.6', label: 'Claude Sonnet 4.6' },
+  { value: 'anthropic/Claude-Opus-4.6',   label: 'Claude Opus 4.6' },
 ];
 
 const SCREENING_MODELS = [
-  { value: 'anthropic/claude-opus-4.5',   label: 'Claude Opus 4.5 (recommended)' },
-  { value: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
-  { value: 'anthropic/claude-opus-4-6',   label: 'Claude Opus 4.6' },
+  { value: 'anthropic/Claude-Opus-4.5',   label: 'Claude Opus 4.5 (recommended)' },
+  { value: 'anthropic/Claude-Sonnet-4.5', label: 'Claude Sonnet 4.5' },
+  { value: 'anthropic/Claude-Opus-4.6',   label: 'Claude Opus 4.6' },
 ];
 
 // ── Log panel ─────────────────────────────────────────────────────────────────
@@ -272,7 +270,7 @@ export default function Scraper() {
       apiKey: values.soApiKey || '',
       screening: values.screening ?? true,
       screeningTimeout: values.screeningTimeout ?? 180,
-      screeningModel: values.screeningModel || 'anthropic/claude-opus-4.5',
+      screeningModel: values.screeningModel || 'Claude-Opus-4.5',
       polish: values.polish ?? true,
       polishMaxRounds: values.polishMaxRounds ?? 5,
       agentAttempts: values.agentAttempts ?? 1,
@@ -342,18 +340,18 @@ export default function Scraper() {
               onFinish={handleStart}
               initialValues={{
                 tags: ['bash', 'linux'],
-                maxTasks: 5,
-                model: 'deepseek/deepseek-v3.2',
+                maxTasks: 1,
+                model: 'anthropic/Claude-Sonnet-4.5',
                 minScore: 5,
                 terminalOnly: true,
                 skipExisting: true,
-                difficulty: 'Medium',
+                difficulty: 'Hard',
                 screening: true,
                 screeningTimeout: 180,
-                screeningModel: 'anthropic/claude-opus-4.5',
+                screeningModel: 'anthropic/Claude-Opus-4.5',
                 polish: true,
-                polishMaxRounds: 5,
-                agentAttempts: 1,
+                polishMaxRounds: 10,
+                agentAttempts: 4,
               }}
             >
               {/* ── Tag Presets (pill-shaped) ── */}

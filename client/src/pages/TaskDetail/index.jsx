@@ -138,8 +138,8 @@ function SubmissionPanel({ taskId, onSubmitted }) {
 }
 
 const VERIFY_MODELS = [
-  { label: 'deepseek-v3.2 (default)', value: 'deepseek/deepseek-v3.2' },
-  { label: 'claude-opus-4.5', value: 'anthropic/claude-opus-4.5' },
+  { label: 'Claude Sonnet 4.5 (default)', value: 'Claude-Sonnet-4.5' },
+  { label: 'Claude Opus 4.5', value: 'Claude-Opus-4.5' },
 ];
 
 const LOG_COLORS = {
@@ -156,7 +156,7 @@ function VerifyPanel({ taskId, onFilesFixed }) {
   const [checkResult, setCheckResult] = useState(null);
   const [sseActive, setSseActive] = useState(false);
   const [maxRetries, setMaxRetries] = useState(10);
-  const [model, setModel] = useState('deepseek/deepseek-v3.2');
+  const [model, setModel] = useState('Claude-Sonnet-4.5');
   const logsEndRef = useRef(null);
 
   const sseUrl = sseActive ? `/api/tasks/${taskId}/verify/stream` : null;
@@ -319,10 +319,10 @@ function VerifyPanel({ taskId, onFilesFixed }) {
 // ── PolishPanel ───────────────────────────────────────────────────────────────
 
 const FIX_MODELS = [
-  { label: 'Claude Opus 4.6 (recommended)', value: 'anthropic/claude-opus-4-6' },
-  { label: 'Claude Sonnet 4.6', value: 'anthropic/claude-sonnet-4-6' },
-  { label: 'DeepSeek V3 (fast)', value: 'deepseek/deepseek-v3.2' },
-  { label: 'DeepSeek R1 (slower, deeper)', value: 'deepseek/deepseek-r1' },
+  { label: 'Claude Opus 4.6 (recommended)', value: 'Claude-Opus-4.6' },
+  { label: 'Claude Sonnet 4.6', value: 'Claude-Sonnet-4.6' },
+  { label: 'Claude Opus 4.5', value: 'Claude-Opus-4.5' },
+  { label: 'Claude Sonnet 4.5', value: 'Claude-Sonnet-4.5' },
 ];
 
 function CheckIcon({ state }) {
@@ -393,7 +393,7 @@ function PolishPanel({ taskId, onSubmitted }) {
   const [sseActive, setSseActive]   = useState(false);
   const [maxRounds, setMaxRounds]   = useState(5);
   const [agentAttempts, setAgentAttempts] = useState(4);
-  const [fixModel, setFixModel]     = useState('anthropic/claude-opus-4-5');
+  const [fixModel, setFixModel]     = useState('Claude-Opus-4.5');
   const [autoSubmit, setAutoSubmit] = useState(true);
   const logsEndRef = useRef(null);
 

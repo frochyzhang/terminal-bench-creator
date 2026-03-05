@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Card, Form, Input, InputNumber, Select, Switch, Button, Space, Row, Col,
+  Card, Form, Input, InputNumber, Switch, Button, Space, Row, Col,
   Typography, Divider, message, Spin,
 } from 'antd';
 import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
@@ -55,7 +55,9 @@ export default function Settings() {
   async function handleSave(values) {
     setSaving(true);
     try {
-      const updates = {};
+      const updates = {
+        ai_provider: 'poe',
+      };
       for (const [key, val] of Object.entries(values)) {
         if (val !== '' && val !== null && val !== undefined) {
           updates[key] = (typeof val === 'boolean' || typeof val === 'number') ? String(val) : val;
@@ -77,7 +79,9 @@ export default function Settings() {
     try {
       // Save current form values first
       const values = form.getFieldsValue();
-      const updates = {};
+      const updates = {
+        ai_provider: 'poe',
+      };
       for (const [key, val] of Object.entries(values)) {
         if (val !== '' && val !== null && val !== undefined) {
           updates[key] = val;
@@ -114,36 +118,17 @@ export default function Settings() {
         }}
       >
         <Card title="AI Provider" style={{ marginBottom: 16 }}>
-          <Form.Item name="ai_provider" label="Provider">
-            <Select>
-              <Select.Option value="anthropic">Anthropic (Direct)</Select.Option>
-              <Select.Option value="openrouter">OpenRouter</Select.Option>
-            </Select>
-          </Form.Item>
-
-          <Divider>Anthropic</Divider>
-          <Form.Item name="anthropic_api_key" label="Anthropic API Key">
+          <Divider>Poe</Divider>
+          <Form.Item name="poe_api_key" label="Poe API Key">
             <Input.Password
-              placeholder={rawSettings.anthropic_api_key?.value || 'sk-ant-...'}
+              placeholder={rawSettings.poe_api_key?.value || 'sk-poe-...'}
             />
           </Form.Item>
-          <Form.Item name="anthropic_model" label="Model">
-            <Select>
-              <Select.Option value="claude-opus-4-6">claude-opus-4-6 (Recommended)</Select.Option>
-              <Select.Option value="claude-sonnet-4-6">claude-sonnet-4-6</Select.Option>
-              <Select.Option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</Select.Option>
-            </Select>
+          <Form.Item name="poe_model" label="Model">
+            <Input placeholder="Claude-Sonnet-4.5" />
           </Form.Item>
-
-          <Divider>OpenRouter</Divider>
-          <Form.Item name="openrouter_api_base" label="API Base URL">
-            <Input placeholder="http://127.0.0.1:8080/api/v1" />
-          </Form.Item>
-          <Form.Item name="openrouter_api_key" label="OpenRouter API Key">
-            <Input.Password placeholder="sk-or-..." />
-          </Form.Item>
-          <Form.Item name="openrouter_model" label="Model">
-            <Input placeholder="anthropic/claude-opus-4-6" />
+          <Form.Item name="poe_api_base" label="API Base URL">
+            <Input placeholder="https://api.poe.com/v1" />
           </Form.Item>
         </Card>
 

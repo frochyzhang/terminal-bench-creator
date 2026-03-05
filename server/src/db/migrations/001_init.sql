@@ -36,11 +36,10 @@ CREATE TABLE IF NOT EXISTS settings (
 
 -- Seed default settings
 INSERT INTO settings (key, value) VALUES
-  ('ai_provider', 'anthropic'),
-  ('anthropic_api_key', ''),
-  ('openrouter_api_key', ''),
-  ('anthropic_model', 'claude-opus-4-6'),
-  ('openrouter_model', 'anthropic/claude-opus-4-6'),
+  ('ai_provider', 'poe'),
+  ('poe_api_key', ''),
+  ('poe_model', 'Claude-Sonnet-4.5'),
+  ('poe_api_base', 'https://api.poe.com/v1'),
   ('tb_email', ''),
   ('tb_password', ''),
   ('tb_base_url', 'https://terminal-bench.com'),

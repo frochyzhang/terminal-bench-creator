@@ -1,6 +1,4 @@
-import axios from 'axios';
-
-const api = axios.create({ baseURL: '/api' });
+import api from './client.js';
 
 export const getTasks = (params) => api.get('/tasks', { params }).then(r => r.data);
 export const getTask = (id) => api.get(`/tasks/${id}`).then(r => r.data);

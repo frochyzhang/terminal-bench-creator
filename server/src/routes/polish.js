@@ -25,10 +25,10 @@ router.post('/', async (req, res, next) => {
       maxRounds      = 5,
       oracleTimeout  = 600,
       agentAttempts  = 4,
-      agentModel     = 'anthropic/claude-opus-4-5',
+      agentModel     = 'Claude-Opus-4.5',
       agentTimeout   = 3600,
-      lintModel      = 'deepseek/deepseek-v3.2',
-      fixModel       = 'anthropic/claude-opus-4-5',
+      lintModel      = 'Claude-Sonnet-4.5',
+      fixModel       = 'Claude-Opus-4.5',
       autoSubmit     = true,
     } = req.body || {};
 

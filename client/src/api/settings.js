@@ -1,6 +1,4 @@
-import axios from 'axios';
-
-const api = axios.create({ baseURL: '/api' });
+import api from './client.js';
 
 export const getSettings = () => api.get('/settings').then(r => r.data);
 export const updateSettings = (data) => api.put('/settings', data).then(r => r.data);

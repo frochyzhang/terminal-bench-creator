@@ -1,6 +1,4 @@
-import axios from 'axios';
-
-const api = axios.create({ baseURL: '/api' });
+import api from './client.js';
 
 export const getSubmissions = (params) => api.get('/submissions', { params }).then(r => r.data);
 export const getSubmission = (id) => api.get(`/submissions/${id}`).then(r => r.data);

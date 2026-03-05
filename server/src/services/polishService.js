@@ -16,7 +16,7 @@
  */
 
 import { spawn } from 'child_process';
-import { readFile, writeFile, rm, mkdir, access } from 'fs/promises';
+import { readFile, writeFile, rm, mkdir, access, readdir } from 'fs/promises';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import pool from '../db/client.js';
@@ -94,7 +94,7 @@ function log(job, level, message) {
  * @param {number}   [opts.agentTimeout=900]       秒（k=4 需要充足时间）
  * @param {string}   [opts.lintModel]
  * @param {string}   [opts.fixModel]
- * @param {string}   [opts.postCheckModel]          TB Step6 审核模型（默认 claude-opus-4-6）
+ * @param {string}   [opts.postCheckModel]          TB Step6 审核模型（默认 Claude-Sonnet-4.5）
  * @param {boolean}  [opts.autoSubmit=true]
  * @param {Function} [opts.externalBroadcast]
  */
@@ -266,6 +266,7 @@ function runOracleCheck(job, taskPath) {
     const harborCmd = `harbor run --path "${taskPath}" --agent oracle --jobs-dir "${jobsDir}"`;
 
     log(job, 'info', `  [Oracle] ${harborCmd}  (timeout=${job.oracleTimeout}s)`);
+    log(job, 'info', `  [Oracle] bash -c ${JSON.stringify(mkHarborCmd(harborCmd))}`);
 
     const t0    = Date.now();
     const child = spawnBash(mkHarborCmd(harborCmd));
@@ -279,24 +280,40 @@ function runOracleCheck(job, taskPath) {
 
     const lines = collectLines(child, line => broadcast(job.taskId, 'oracle-log', { text: line }));
 
-    child.on('close', async (code, signal) => {
-      clearTimeout(killTimer);
-      if (signal) timedOut = true;
-      const elapsedMs = Date.now() - t0;
-      await _writeRunLog(logFile, `Oracle Round ${job.round}`, job.slug, harborCmd, lines, code ?? signal, elapsedMs);
+     child.on('close', async (code, signal) => {
+       clearTimeout(killTimer);
+       if (signal) timedOut = true;
+       const elapsedMs = Date.now() - t0;
+       const fullCmd = `bash -c ${JSON.stringify(mkHarborCmd(harborCmd))}`;
+       await _writeRunLog(logFile, `Oracle Round ${job.round}`, job.slug, fullCmd, lines, code ?? signal, elapsedMs);
 
-      const passed = !timedOut && code === 0;
-      const output = lines.slice(-50).join('\n');
-      const issues = passed ? [] : [
-        timedOut
-          ? `Oracle timed out (${job.oracleTimeout}s) — solution or test may hang`
-          : 'Oracle failed — solution does not pass the task tests',
-      ];
-      broadcast(job.taskId, 'oracle-done', { passed, timedOut, issueCount: issues.length });
-      log(job, passed ? 'info' : 'warn',
-        `  [Oracle] ${passed ? '✅' : timedOut ? '⏱ timed out' : '❌'} exit=${code ?? signal} elapsed=${Math.round(elapsedMs / 1000)}s → ${logFile}`);
-      resolve({ passed, timedOut, issues, output });
-    });
+       const exceptionFiles = await findExceptionFiles(jobsDir);
+       const meanValue = await readResultMean(jobsDir);
+       let passed = !timedOut && meanValue === 1.0;
+       let output = lines.slice(-50).join('\n');
+       const issues = [];
+       if (timedOut) {
+         issues.push(`Oracle timed out (${job.oracleTimeout}s) — solution or test may hang`);
+       } else if (meanValue === null) {
+         issues.push('Oracle failed — result.json missing or invalid (mean not found)');
+       } else if (meanValue !== 1.0) {
+         issues.push(`Oracle failed — result.json mean=${meanValue}, expected 1.0`);
+       }
+       if (exceptionFiles.length > 0) {
+         const relPaths = exceptionFiles.map(f => f.path.replace(taskPath + '/', ''));
+         if (!passed) {
+           issues.push(`Oracle runtime error detected: exception.txt found (${relPaths.join(', ')})`);
+         }
+         const exceptionOutput = exceptionFiles
+           .map(f => `--- ${f.path} ---\n${f.snippet || '(empty)'}`)
+           .join('\n\n');
+         output = [output, exceptionOutput].filter(Boolean).join('\n\n');
+       }
+       broadcast(job.taskId, 'oracle-done', { passed, timedOut, issueCount: issues.length });
+       log(job, passed ? 'info' : 'warn',
+         `  [Oracle] ${passed ? '✅' : timedOut ? '⏱ timed out' : '❌'} exit=${code ?? signal} elapsed=${Math.round(elapsedMs / 1000)}s → ${logFile}`);
+       resolve({ passed, timedOut, issues, output });
+     });
 
     child.on('error', err => {
       log(job, 'warn', `  [Oracle] Spawn error: ${err.message} — skipped`);
@@ -377,12 +394,11 @@ async function runInstrQualityCheck(job) {
       broadcast(job.taskId, 'instr-done', r);
       return r;
     }
-    const { generateWithOpenRouter } = await import('./aiService/openrouterProvider.js');
+    const { generateWithPoe } = await import('./aiService/poeProvider.js');
 
-    // TB Step 4 uses gemini-2.5-pro — use instrCheckModel (same default)
     let out = '';
     await runWithQueue(() =>
-      generateWithOpenRouter(INSTR_QUALITY_REVIEWER_SYSTEM, `Review this instruction.md:\n\n${instr}`, c => { out += c; }, job.instrCheckModel)
+      generateWithPoe(INSTR_QUALITY_REVIEWER_SYSTEM, `Review this instruction.md:\n\n${instr}`, c => { out += c; }, job.instrCheckModel)
     );
     let result = { passed: true, issues: [] };
     const m = out.match(/\{[\s\S]*\}/);
@@ -425,6 +441,7 @@ function runAgentCheck(job, taskPath) {
       ` --jobs-dir "${jobsDir}"`;
 
     log(job, 'info', `  [AgentTest] ${harborCmd}  (timeout=${job.agentTimeout}s)`);
+    log(job, 'info', `  [AgentTest] bash -c ${JSON.stringify(mkHarborCmd(harborCmd))}`);
 
     const t0    = Date.now();
     const child = spawnBash(mkHarborCmd(harborCmd));
@@ -438,40 +455,62 @@ function runAgentCheck(job, taskPath) {
 
     const lines = collectLines(child, line => broadcast(job.taskId, 'agent-log', { text: line }));
 
-    child.on('close', async (code, signal) => {
-      clearTimeout(killTimer);
-      if (signal) timedOut = true;
-      const elapsedMs = Date.now() - t0;
-      await _writeRunLog(logFile, `Agent Test Round ${job.round}`, job.slug, harborCmd, lines, code ?? signal, elapsedMs);
+     child.on('close', async (code, signal) => {
+       clearTimeout(killTimer);
+       if (signal) timedOut = true;
+       const elapsedMs = Date.now() - t0;
+       const fullCmd = `bash -c ${JSON.stringify(mkHarborCmd(harborCmd))}`;
+       await _writeRunLog(logFile, `Agent Test Round ${job.round}`, job.slug, fullCmd, lines, code ?? signal, elapsedMs);
 
-      const allOutput = lines.join('\n');
-      const rateMatch = allOutput.match(/(\d+)\s*\/\s*(\d+)\s*(attempts?\s*)?(passed|success)/i);
-      let passed   = code === 0;
-      let passRate = rateMatch ? `${rateMatch[1]}/${rateMatch[2]}` : (passed ? `≥1/${job.agentAttempts}` : `0/${job.agentAttempts}`);
-      const issues = [];
+       const allOutput = lines.join('\n');
+       const meanValue = await readResultMean(jobsDir);
+       const exceptionFiles = await findExceptionFiles(jobsDir);
+       let passed = !timedOut && meanValue !== null;
+       let passDetails = '';
 
-      if (timedOut) {
-        passed = false;
-        issues.push(`Agent test timed out (${job.agentTimeout}s) — task or environment may be too slow`);
-      } else if (rateMatch) {
-        const passCount  = parseInt(rateMatch[1]);
-        const totalCount = parseInt(rateMatch[2]);
-        if (passCount === 0) {
-          passed = false;
-          issues.push(`Agent test failed: 0/${totalCount} attempts passed — task may be broken (tests/Dockerfile/instruction issue)`);
-        } else if (passCount === totalCount) {
-          passed = false;
-          issues.push(`Agent test too easy: ${passRate} — ALL attempts passed. Task lacks difficulty discrimination. Target: 1–${totalCount - 1}/${totalCount}`);
-        }
-      } else if (!passed) {
-        issues.push(`Agent test failed: 0/${job.agentAttempts} attempts passed — task may be broken (tests/Dockerfile/instruction issue)`);
-      }
+       if (timedOut) {
+         passDetails = 'timed out';
+         passed = false;
+       } else if (meanValue === null) {
+         passDetails = 'mean missing';
+         passed = false;
+       } else {
+         passDetails = `mean=${meanValue}`;
+         if (meanValue < 0.25) {
+           passed = false;
+         } else if (meanValue > 0.75) {
+           passed = false;
+         }
+       }
 
-      broadcast(job.taskId, 'agent-done', { passed, passRate, timedOut, issueCount: issues.length });
-      log(job, passed ? 'info' : 'warn',
-        `  [AgentTest] ${passed ? `✅ ${passRate} passed` : timedOut ? '⏱ timed out' : `❌ ${passRate} passed`} exit=${code} elapsed=${Math.round(elapsedMs / 1000)}s → ${logFile}`);
-      resolve({ passed, passRate, timedOut, issues, output: allOutput.slice(-2000) });
-    });
+       const issues = [];
+       if (timedOut) {
+         issues.push(`Agent test timed out (${job.agentTimeout}s) — task or environment may be too slow`);
+       } else if (meanValue === null) {
+         issues.push('Agent test failed — result.json missing or invalid (mean not found)');
+       } else if (meanValue < 0.25) {
+         issues.push(`Agent test too hard: mean=${meanValue} (<0.25) — task may be broken or overly strict`);
+       } else if (meanValue > 0.75) {
+         issues.push(`Agent test too easy: mean=${meanValue} (>0.75) — task lacks difficulty discrimination`);
+       }
+
+       const output = [allOutput.slice(-2000)];
+       if (exceptionFiles.length > 0) {
+         const relPaths = exceptionFiles.map(f => f.path.replace(taskPath + '/', ''));
+         if (!passed) {
+           issues.push(`Agent runtime error detected: exception.txt found (${relPaths.join(', ')})`);
+         }
+         const exceptionOutput = exceptionFiles
+           .map(f => `--- ${f.path} ---\n${f.snippet || '(empty)'}`)
+           .join('\n\n');
+         output.push(exceptionOutput);
+       }
+
+       broadcast(job.taskId, 'agent-done', { passed, passDetails, timedOut, issueCount: issues.length });
+       log(job, passed ? 'info' : 'warn',
+         `  [AgentTest] ${passed ? `✅ ${passDetails} passed` : timedOut ? '⏱ timed out' : `❌ ${passDetails} passed`} exit=${code} elapsed=${Math.round(elapsedMs / 1000)}s → ${logFile}`);
+       resolve({ passed, passDetails, timedOut, issues, output: output.filter(Boolean).join('\n\n') });
+     });
 
     child.on('error', err => {
       log(job, 'warn', `  [AgentTest] Spawn error: ${err.message} — skipped`);
@@ -491,7 +530,7 @@ async function runPostCheck(job) {
   log(job, 'info', '  [PostCheck] Dual AI audit: RL value + test quality (concurrent)…');
   try {
     const files = await readTaskFiles(job.slug);
-    const { generateWithOpenRouter } = await import('./aiService/openrouterProvider.js');
+    const { generateWithPoe } = await import('./aiService/poeProvider.js');
 
     const allFilesBlock =
       `=== instruction.md ===\n${files['instruction.md'] || '(empty)'}\n\n` +
@@ -500,8 +539,8 @@ async function runPostCheck(job) {
       `=== environment/Dockerfile ===\n${files['environment/Dockerfile'] || '(empty)'}`;
 
     const [check01, check02] = await Promise.all([
-      _postCheck01_RLValueQuality(job, allFilesBlock, generateWithOpenRouter),
-      _postCheck02_TestQuality(job, allFilesBlock, generateWithOpenRouter),
+      _postCheck01_RLValueQuality(job, allFilesBlock, generateWithPoe),
+      _postCheck02_TestQuality(job, allFilesBlock, generateWithPoe),
     ]);
 
     const passed  = check01.passed && check02.passed;
@@ -521,23 +560,23 @@ async function runPostCheck(job) {
   }
 }
 
-async function _postCheck01_RLValueQuality(job, allFilesBlock, generateWithOpenRouter) {
+async function _postCheck01_RLValueQuality(job, allFilesBlock, generateWithPoe) {
   return _parsePostCheckJSON(
-    await _aiCallPost(job, `Review this task:\n\n${allFilesBlock}`, POST_CHECK_01_SYSTEM, generateWithOpenRouter)
+    await _aiCallPost(job, `Review this task:\n\n${allFilesBlock}`, POST_CHECK_01_SYSTEM, generateWithPoe)
   );
 }
 
-async function _postCheck02_TestQuality(job, allFilesBlock, generateWithOpenRouter) {
+async function _postCheck02_TestQuality(job, allFilesBlock, generateWithPoe) {
   return _parsePostCheckJSON(
-    await _aiCallPost(job, `Review this task:\n\n${allFilesBlock}`, POST_CHECK_02_SYSTEM, generateWithOpenRouter)
+    await _aiCallPost(job, `Review this task:\n\n${allFilesBlock}`, POST_CHECK_02_SYSTEM, generateWithPoe)
   );
 }
 
-// Post-check calls use postCheckModel (claude-opus by default — matches TB Step 6 "Claude review")
-async function _aiCallPost(job, user, system, generateWithOpenRouter) {
+// Post-check calls use postCheckModel (Claude default)
+async function _aiCallPost(job, user, system, generateWithPoe) {
   let out = '';
   await runWithQueue(() =>
-    generateWithOpenRouter(system, user, c => { out += c; }, job.postCheckModel)
+    generateWithPoe(system, user, c => { out += c; }, job.postCheckModel)
   );
   return out;
 }
@@ -559,7 +598,7 @@ function _parsePostCheckJSON(out) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 async function fixWithAI(job, failedChecks) {
-  const { generateWithOpenRouter } = await import('./aiService/openrouterProvider.js');
+  const { generateWithPoe } = await import('./aiService/poeProvider.js');
   const files  = await readTaskFiles(job.slug);
   const total  = failedChecks.reduce((n, g) => n + g.issues.length, 0);
   const srcs   = failedChecks.map(g => g.source).join(', ');
@@ -608,7 +647,7 @@ Output the corrected <files> XML.`;
 
   let aiOut = '';
   await runWithQueue(() =>
-    generateWithOpenRouter(system, user, chunk => {
+    generateWithPoe(system, user, chunk => {
       aiOut += chunk;
       broadcast(job.taskId, 'fix-chunk', { chunk });
     }, job.fixModel)
@@ -708,6 +747,65 @@ function collectLines(child, onLine) {
   child.stdout.on('data', handle);
   child.stderr.on('data', handle);
   return lines;
+}
+
+async function findExceptionFiles(rootDir) {
+  const results = [];
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (entry.isFile() && entry.name === 'exception.txt') {
+        let snippet = '';
+        try {
+          snippet = (await readFile(fullPath, 'utf-8')).split('\n').slice(0, 12).join('\n');
+        } catch {
+          snippet = '';
+        }
+        results.push({ path: fullPath, snippet });
+      }
+    }
+  }
+  await walk(rootDir);
+  return results;
+}
+
+async function readResultMean(rootDir) {
+  const resultPath = join(rootDir, 'result.json');
+  let raw;
+  try {
+    raw = await readFile(resultPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const direct = extractMeanValue(data);
+  return typeof direct === 'number' ? direct : null;
+}
+
+function extractMeanValue(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (typeof obj.mean === 'number') return obj.mean;
+  if (typeof obj.stats?.mean === 'number') return obj.stats.mean;
+  for (const value of Object.values(obj)) {
+    if (value && typeof value === 'object') {
+      const found = extractMeanValue(value);
+      if (typeof found === 'number') return found;
+    }
+  }
+  return null;
 }
 
 async function _writeRunLog(logFile, title, slug, cmd, lines, exitCode, elapsedMs) {
